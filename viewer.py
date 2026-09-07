@@ -20,6 +20,8 @@ RAR を扱うには unrar (または unar) コマンドが別途必要です。
 # 診断に使う)。修正のたびに、このソースコードを書いた日時で更新する。
 # 形式: YY(年2桁) + 月をA=1月,B=2月,...,L=12月で表した1文字 + DD(日) + "-" + HHMM(時刻)
 # 例: 2026年8月13日 06:48 -> "26H13-0648" (8月=8番目の文字=H)
+APP_NAME = "arXveViewer"
+APP_VERSION = "0.1.0"
 BUILD_MARKER = "26I07-debug1"
 
 import sys
@@ -3702,8 +3704,8 @@ class ImageViewer(QMainWindow):
         menu.exec(self.mapToGlobal(pos))
 
     def _show_viewer_context_menu(self, pos):
-        # MPC-HCの右クリックメニューを参考にした構成:
-        # 開く / ページ / 拡大縮小 / アスペクト比 / 表示 / オプション / バージョン情報 / 終了
+        # 開く / ページ / 拡大縮小 / アスペクト比 / 表示 /
+        # オプション / バージョン情報 / 終了
         menu = QMenu(self)
         has_archive = self.reader is not None and bool(self.reader.image_names)
 
@@ -3715,7 +3717,7 @@ class ImageViewer(QMainWindow):
 
         menu.addSeparator()
 
-        # ---- ページ（MPC-HCの「ナビゲート」相当） ----
+        # ---- ページ ----
         nav_menu = menu.addMenu("ページ")
         for action_id in ("next_page", "prev_page", "first_page", "last_page"):
             action = self.actions_by_id[action_id]
@@ -3744,7 +3746,7 @@ class ImageViewer(QMainWindow):
 
         menu.addSeparator()
 
-        # ---- 表示（MPC-HCの「表示」相当） ----
+        # ---- 表示 ----
         view_menu = menu.addMenu("表示")
         view_menu.addAction(self.actions_by_id["toggle_always_on_top"])
 
@@ -3818,9 +3820,12 @@ class ImageViewer(QMainWindow):
         QMessageBox.about(
             self,
             "バージョン情報",
-            "Archive Image Viewer\n\n"
-            "ZIP / RAR 内の画像を表示するシンプルなビューア。\n"
-            "右クリックメニューは MPC-HC を参考にしています。"
+            f"{APP_NAME} {APP_VERSION}\n\n"
+            "フォルダやアーカイブ内の画像を先読み表示し、\n"
+            "任意の外部AIエンジンでアップスケールするビューアです。\n\n"
+            "対応: ZIP / RAR / 7z / TLG5 / TLG6\n"
+            "GUI: PySide6\n"
+            "License: Apache-2.0"
         )
 
 
