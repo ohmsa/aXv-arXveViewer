@@ -473,7 +473,7 @@ def _get_onnx_session(model_path, provider):
         return _onnx_model_cache[key]
 
 
-def _qimage_to_nchw(image):
+def _qimage_to_nchw(image, dtype=np.float32):
     rgb = image.convertToFormat(QImage.Format_RGB888)
     w, h = rgb.width(), rgb.height()
     bpl = rgb.bytesPerLine()
@@ -481,7 +481,9 @@ def _qimage_to_nchw(image):
     if hasattr(ptr, "setsize"):
         ptr.setsize(bpl * h)
     arr = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape(h, bpl)[:, :w * 3]
-    return arr.reshape(h, w, 3).astype(np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
+    tensor = arr.reshape(h, w, 3).astype(dtype).transpose(2, 0, 1)[np.newaxis]
+    tensor /= 255.0
+    return np.ascontiguousarray(tensor)
 
 
 def _nchw_to_qimage(result):
@@ -497,8 +499,12 @@ def run_onnxruntime_inference(engine_key, model_name, image):
     if not model_path.exists():
         raise FileNotFoundError(f"モデルが見つかりません: {model_path}")
     session = _get_onnx_session(model_path, engine["provider"])
-    input_name = session.get_inputs()[0].name
-    result = session.run(None, {input_name: _qimage_to_nchw(image)})[0]
+    input_info = session.get_inputs()[0]
+    input_dtypes = {"tensor(float16)": np.float16, "tensor(float)": np.float32}
+    if input_info.type not in input_dtypes:
+        raise ValueError(f"Unsupported ONNX input type: {input_info.type}")
+    tensor = _qimage_to_nchw(image, dtype=input_dtypes[input_info.type])
+    result = session.run(None, {input_info.name: tensor})[0]
     return _nchw_to_qimage(result)
 
 

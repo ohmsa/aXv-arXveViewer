@@ -51,3 +51,8 @@ password_list.txt
 .DS_Store
 Thumbs.db
 *.swp
+
+# Generated build shortcuts
+aXv_original.lnk
+aXv_openVINO.lnk
+aXv_directML.lnk

@@ -3,5 +3,7 @@ numpy>=1.26,<3
 Pillow>=10,<13
 pyzipper>=0.3.6,<1
 rarfile>=4.2,<5
-py7zr>=0.22,<2
+# Windows 10/11 includes signed bsdtar with 7z support.  The py7zr dependency
+# pulls in unsigned native extensions that Windows App Control can block.
+py7zr>=0.22,<2; sys_platform != "win32"
 keyring>=25,<26

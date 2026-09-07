@@ -36,6 +36,9 @@ if not exist "%PYEXE%" (
 )
 
 echo [2/4] Installing build dependencies...
+REM Windows uses its signed built-in tar.exe for 7z. Remove unsigned py7zr extensions
+REM left by older installs because Windows App Control can block them during builds.
+"%PYEXE%" -m pip uninstall -y py7zr backports.zstd inflate64 pybcj pyppmd multivolumefile texttable >nul 2>&1
 "%PYEXE%" -m pip install --no-cache-dir -r requirements-build.txt
 if errorlevel 1 exit /b 1
 if not "%AI_BACKEND%"=="" (

@@ -56,10 +56,14 @@ def spin_until(predicate, timeout=5):
 
 class RegressionTests(unittest.TestCase):
     def setUp(self):
-        self.settings_patch = patch.object(viewer, 'load_settings', return_value=dict(viewer.DEFAULT_SETTINGS))
+        settings = dict(viewer.DEFAULT_SETTINGS, ai_benchmark_completed=True)
+        self.settings_patch = patch.object(viewer, 'load_settings', return_value=settings)
         self.settings_patch.start()
         self.v = viewer.ImageViewer()
         self.v.ai_upscale_enabled = True
+        # These scheduler tests use tiny synthetic images and independent pages.
+        self.v.skip_low_res_enabled = False
+        self.v.ai_diff_based_enabled = False
         self.v.zoom_mode = '200'
         self.v._start_sibling_prefetch = Mock()
         self.image = QImage(32, 32, QImage.Format_RGB32)
@@ -486,6 +490,63 @@ for a,b in pairs:
             worker.run()
         self.assertEqual(failures, [('archive', 0)])
 
+class OnnxInputDtypeTests(unittest.TestCase):
+    def test_input_type_and_padded_rgb_rows(self):
+        import numpy as np
+        image = QImage(3, 2, QImage.Format_RGB888)
+        image.fill(0xFF804020)
+        for type_name, dtype in [('tensor(float16)', np.float16), ('tensor(float)', np.float32)]:
+            with self.subTest(type_name=type_name):
+                session = Mock()
+                session.get_inputs.return_value = [Mock(name='unused', type=type_name)]
+                session.get_inputs.return_value[0].name = 'pixels'
+                session.run.side_effect = lambda outputs, feeds: [feeds['pixels']]
+                with patch.object(Path, 'exists', return_value=True), patch.object(ai_upscale, '_get_onnx_session', return_value=session):
+                    result = ai_upscale.run_onnxruntime_inference('directml', 'test', image)
+                tensor = session.run.call_args.args[1]['pixels']
+                self.assertEqual(tensor.dtype, dtype)
+                self.assertEqual(tensor.shape, (1, 3, 2, 3))
+                self.assertTrue(tensor.flags.c_contiguous)
+                np.testing.assert_allclose(tensor[0, :, 0, 0], np.array([128, 64, 32]) / 255, atol=0.001)
+                self.assertEqual(result.size(), image.size())
+
+    def test_unsupported_input_fails_before_inference(self):
+        session = Mock()
+        session.get_inputs.return_value = [Mock(type='tensor(uint8)')]
+        with patch.object(Path, 'exists', return_value=True), patch.object(ai_upscale, '_get_onnx_session', return_value=session):
+            with self.assertRaisesRegex(ValueError, 'tensor'):
+                ai_upscale.run_onnxruntime_inference('directml', 'test', QImage())
+        session.run.assert_not_called()
+
+    def test_default_dtype_and_settings(self):
+        import numpy as np
+        image = QImage(3, 2, QImage.Format_RGB888)
+        image.fill(0)
+        self.assertEqual(ai_upscale._qimage_to_nchw(image).dtype, np.float32)
+        for key in ('ai_upscale_enabled', 'ai_diff_based_enabled', 'skip_low_res_enabled'):
+            self.assertTrue(viewer.DEFAULT_SETTINGS[key])
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'Windows uses the OS bsdtar backend')
+class WindowsSevenZipTests(unittest.TestCase):
+    def test_signed_system_tar_lists_and_extracts_7z(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            source = directory / 'source'
+            source.mkdir()
+            expected = b'not-a-real-png-but-valid-archive-content'
+            (source / 'page.png').write_bytes(expected)
+            archive = directory / 'pages.7z'
+            completed = subprocess.run(
+                ['tar.exe', '--format', '7zip', '-cf', str(archive),
+                 '-C', str(source), 'page.png'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            reader = viewer.ArchiveReader(archive, [])
+            self.assertEqual(reader.image_names, ['page.png'])
+            self.assertEqual(reader.read('page.png'), expected)
+
 if __name__ == '__main__':
     unittest.main()
-

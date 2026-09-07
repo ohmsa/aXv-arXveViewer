@@ -144,10 +144,16 @@ try:
 except ImportError:
     HAS_RARFILE = False
 
-try:
-    import py7zr
-    HAS_PY7ZR = True
-except ImportError:
+# On Windows, use the signed bsdtar shipped with the OS.  Importing py7zr there
+# loads several unsigned native extensions which Windows App Control may block.
+if sys.platform != "win32":
+    try:
+        import py7zr
+        HAS_PY7ZR = True
+    except ImportError:
+        HAS_PY7ZR = False
+else:
+    py7zr = None
     HAS_PY7ZR = False
 
 try:
@@ -242,7 +248,7 @@ DEFAULT_SETTINGS = {
     "rotation": 0,            # 0, 90, 180, 270（時計回り）
     "keybinds": {},          # {action_id: "Ctrl+O", ...} 未設定分はデフォルト値を使う
     "auto_resize_window": False,  # 画像に合わせてウィンドウサイズを自動調整するか
-    "ai_upscale_enabled": False,   # AIアップスケールを使うか
+    "ai_upscale_enabled": True,   # AIアップスケールを使うか
     "ai_upscale_engine": "realesrgan",  # 使用する推論エンジン
     "ai_upscale_model": "realesrgan-x4plus-anime",  # 使うモデル
     "prefetch_window": 2,       # 通常のデコード先読み: 前後何ページ分保持するか
@@ -259,8 +265,8 @@ DEFAULT_SETTINGS = {
     "ai_upscale_mode": "target",  # "off"/"on"/"count"/"target"/"undershoot"/"overshoot" (Uキーで切替)
     "ai_upscale_fixed_count": 1,  # ai_upscale_mode="count"の時の固定パス数
     "fullscreen_exit_mode": "keep",  # 全画面終了時: "keep"(直前のサイズ) / "100"(画像の100%サイズ)
-    "ai_diff_based_enabled": False,  # 差分ベースAI高速化(前ページと似ている場合、変化部分だけ処理する)
-    "skip_low_res_enabled": False,  # 低解像度画像を先読み/AI処理の対象から除外するか
+    "ai_diff_based_enabled": True,  # 差分ベースAI高速化(前ページと似ている場合、変化部分だけ処理する)
+    "skip_low_res_enabled": True,  # 低解像度画像を先読み/AI処理の対象から除外するか
     "skip_low_res_threshold": 100,  # 幅または高さがこの値未満ならスキップ対象
     "passed_pages_keep_count": 3,  # 現在位置より後ろ(通り過ぎた)のページを、何ページ分まで残すか
     "ai_batch_processing_enabled": True,  # 背景の先読み分を複数枚まとめて1回のプロセス起動で処理するか
@@ -534,6 +540,18 @@ class ArchiveReader:
         """7zアーカイブを開く。ソリッド圧縮の特性上、ZIPほど個別ファイルの
         ランダムアクセスは高速ではない点に注意(読み出しのたびに必要な範囲を
         展開し直す)。パスワード付き7zにも対応する。"""
+        if sys.platform == "win32":
+            last_error = None
+            for pw in [None] + list(self.passwords):
+                try:
+                    names = self._run_windows_tar("-tf", password=pw).decode("utf-8", errors="replace").splitlines()
+                    self.image_names = self._sorted(n for n in names if self._is_image(n))
+                    self._working_password = pw
+                    return
+                except Exception as exc:
+                    last_error = exc
+            raise RuntimeError(f"7zを開けませんでした（パスワード付きの可能性があります）: {last_error}")
+
         if not HAS_PY7ZR:
             raise RuntimeError("7z形式を開くには py7zr が必要です（pip install py7zr）。")
 
@@ -550,6 +568,23 @@ class ArchiveReader:
                 continue
 
         raise RuntimeError(f"7zを開けませんでした（パスワード付きの可能性があります）: {last_error}")
+
+    def _run_windows_tar(self, operation, name=None, password=None):
+        """Windows同梱の署名済みbsdtarで7zを一覧表示または標準出力へ展開する。"""
+        command = ["tar.exe", operation]
+        if password is not None:
+            command += ["--passphrase", password]
+        command.append(str(self.path))
+        if name is not None:
+            command.append(self._resolve_raw_name(name))
+        completed = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if completed.returncode != 0:
+            message = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(message or f"tar.exe failed ({completed.returncode})")
+        return completed.stdout
 
     def _detect_internal_folders(self):
         """image_names(ソート済み)から、アーカイブ内部のトップレベルフォルダ構造を
@@ -711,6 +746,8 @@ class ArchiveReader:
         raise ValueError(f"未対応の種別です: {self.kind}")
 
     def _read_7z(self, name):
+        if sys.platform == "win32":
+            return self._run_windows_tar("-xOf", name=name, password=self._working_password)
         import tempfile
         with py7zr.SevenZipFile(self.path, mode="r", password=self._working_password) as zf:
             with tempfile.TemporaryDirectory(prefix="archive_viewer_7z_") as tmpdir:
@@ -751,6 +788,8 @@ class ArchiveReader:
         if self.kind in ("folder", "single_image"):
             return None  # ファイルシステムのstat情報を別途取るのは呼び出し側の対応が必要なため今回は省略
         if self.kind == "7z":
+            if sys.platform == "win32":
+                return None
             try:
                 with py7zr.SevenZipFile(self.path, mode="r", password=self._working_password) as zf:
                     for entry in zf.list():
@@ -781,6 +820,8 @@ class ArchiveReader:
             except Exception:
                 return None
         if self.kind == "7z":
+            if sys.platform == "win32":
+                return None
             total = 0
             try:
                 with py7zr.SevenZipFile(self.path, mode="r", password=self._working_password) as zf:
@@ -1184,11 +1225,11 @@ class ImageViewer(QMainWindow):
         self.ai_upscale_mode = self.settings.get("ai_upscale_mode", "target")
         self.ai_upscale_fixed_count = self.settings.get("ai_upscale_fixed_count", 1)
         self.fullscreen_exit_mode = self.settings.get("fullscreen_exit_mode", "keep")
-        self.ai_diff_based_enabled = self.settings.get("ai_diff_based_enabled", False)
+        self.ai_diff_based_enabled = self.settings.get("ai_diff_based_enabled", True)
         self._pending_diff_composite = {}  # cache_key -> {"base_image":..., "region_scaled":...}
 
         # ---- AIアップスケール関連 ----
-        self.ai_upscale_enabled = self.settings.get("ai_upscale_enabled", False)
+        self.ai_upscale_enabled = self.settings.get("ai_upscale_enabled", True)
         self.ai_upscale_engine = self.settings.get("ai_upscale_engine", DEFAULT_ENGINE)
         self.ai_upscale_model = self.settings.get("ai_upscale_model", DEFAULT_MODEL)
         self._ai_cache = {}   # index -> ((rotation, aspect_mode), QPixmap) 先読み結果も含む
@@ -1209,7 +1250,7 @@ class ImageViewer(QMainWindow):
         self.last_ai_error = None  # 直近のAI処理失敗の詳細(プロパティダイアログで確認用)
         self.debug_show_pre_ai = False  # oキーで切替: True中はAI処理前の画像を強制的に表示する
         self.debug_show_diff_highlight = False  # hキーで切替: 前ページとの差分領域を色反転表示する
-        self.skip_low_res_enabled = self.settings.get("skip_low_res_enabled", False)
+        self.skip_low_res_enabled = self.settings.get("skip_low_res_enabled", True)
         self._nav_direction = 0  # next_image/prev_imageから来た時だけ1/-1、それ以外は0(スキップしない)
         self.skip_low_res_threshold = self.settings.get("skip_low_res_threshold", 100)
         self.passed_pages_keep_count = self.settings.get("passed_pages_keep_count", 3)
