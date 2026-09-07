@@ -1,0 +1,53 @@
+# Python
+.venv/
+venv/
+python_embed/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build output
+build/
+dist/
+*.spec
+AIUpscaler_distribution/
+AIUpscaler_distribution.zip
+
+# User-supplied AI engines and models
+ai_upscale/
+*.onnx
+*.param
+*.bin
+*-ncnn-vulkan*.zip
+ai_download_cache/
+
+# Optional externally supplied binaries
+unrar.exe
+unrarw64*.exe
+tlg6_native.dll
+
+# User data and logs
+settings.json
+debug_log.txt
+file_check_log.txt
+video_player_log_*.txt
+password_list.txt
+*.backup-*
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
