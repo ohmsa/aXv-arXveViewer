@@ -108,6 +108,39 @@ class RegressionTests(unittest.TestCase):
         v.ai_target_width = v.ai_target_height = 128
         self.assertIsNotNone(v._resolve_ai_plan(QPixmap.fromImage(self.image), 32, 32, 0, False))
 
+    def test_directml_and_cuda_require_their_execution_provider(self):
+        class FakeOrt:
+            @staticmethod
+            def get_available_providers():
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            models = Path(directory) / "openvino_models"
+            models.mkdir()
+            (models / "RealESRGAN_x4.onnx").touch()
+            with patch.object(ai_upscale, "get_ai_upscale_dir", return_value=Path(directory)), \
+                    patch.dict(sys.modules, {"onnxruntime": FakeOrt}):
+                self.assertTrue(ai_upscale.is_engine_available("directml"))
+                self.assertFalse(ai_upscale.is_engine_available("cuda"))
+
+    def test_benchmark_results_are_ranked_and_fastest_is_selected(self):
+        results = [
+            {"engine": "directml", "model": "RealESRGAN_x4", "device": None,
+             "label": "DirectML", "seconds": 0.4, "ok": True},
+            {"engine": "cuda", "model": "RealESRGAN_x4_fp16", "device": None,
+             "label": "CUDA", "seconds": 0.2, "ok": True},
+        ]
+        with patch.object(viewer, "save_settings"):
+            self.v._on_backend_benchmark_finished(results)
+        self.assertEqual(self.v.ai_upscale_engine, "directml")
+        self.assertEqual(self.v.settings["ai_backend_rankings"], results)
+
+        ranked = sorted(results, key=lambda item: item["seconds"])
+        with patch.object(viewer, "save_settings"):
+            self.v._on_backend_benchmark_finished(ranked)
+        self.assertEqual(self.v.ai_upscale_engine, "cuda")
+        self.assertEqual(self.v.ai_upscale_model, "RealESRGAN_x4_fp16")
+
     def test_timeout_kills_and_reaps_single_process(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

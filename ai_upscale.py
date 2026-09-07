@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-AIアップスケール / ノイズ除去（複数エンジン対応、ncnn-vulkanバイナリ呼び出し方式）
+AIアップスケール / ノイズ除去（Vulkan / OpenVINO / DirectML / CUDA対応）
 
 重いMLフレームワーク（PyTorch等）をアプリに同梱する代わりに、
 ncnn-vulkanでコンパイルされた軽量な実行専用バイナリをサブプロセスとして呼び出す方式。
@@ -24,9 +24,8 @@ GPUがVulkan対応であればCPU版より大幅に高速。
             waifu2x-ncnn-vulkan.exe, vcomp140.dll, models-cunet/*.bin,*.param
 
 【注意】
-- Windows専用（.exe）。Windows以外では自動的に無効化される。
-- Vulkan対応GPU/ドライバが必要。無い場合はエラーになるので、失敗時は
-  通常のQtスムーズ拡大にフォールバックする。
+- ncnn実行ファイルはWindowsとVulkan対応GPU/ドライバが必要。
+- OpenVINOとONNX Runtimeは、インストール済みのExecution Providerを利用する。
 - 処理は毎回一時ファイル(入力PNG/出力PNG)を経由する(いずれもファイル入出力
   方式のツールのため)。
 """
@@ -36,6 +35,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -186,6 +186,34 @@ ENGINES = {
         "denoise_variants": {},  # このエンジンにはデノイズON/OFFの切替が無い
         "denoise_only_model": None,
     },
+    "directml": {
+        "label": "ONNX Runtime DirectML (AMD/NVIDIA/Intel)",
+        "in_process": True,
+        "runtime": "onnxruntime",
+        "provider": "DmlExecutionProvider",
+        "models_subdir": "openvino_models",
+        "native_scale": 4,
+        "models": {
+            "RealESRGAN_x4_fp16": {"label": "4倍・高速(fp16)", "scale": 4, "denoise_only": False},
+            "RealESRGAN_x4": {"label": "4倍・高精度(fp32)", "scale": 4, "denoise_only": False},
+        },
+        "denoise_variants": {},
+        "denoise_only_model": None,
+    },
+    "cuda": {
+        "label": "ONNX Runtime CUDA (NVIDIA)",
+        "in_process": True,
+        "runtime": "onnxruntime",
+        "provider": "CUDAExecutionProvider",
+        "models_subdir": "openvino_models",
+        "native_scale": 4,
+        "models": {
+            "RealESRGAN_x4_fp16": {"label": "4倍・高速(fp16)", "scale": 4, "denoise_only": False},
+            "RealESRGAN_x4": {"label": "4倍・高精度(fp32)", "scale": 4, "denoise_only": False},
+        },
+        "denoise_variants": {},
+        "denoise_only_model": None,
+    },
 }
 
 DEFAULT_ENGINE = "realesrgan"
@@ -197,14 +225,19 @@ def is_engine_available(engine_key):
         return False
     engine = ENGINES[engine_key]
     if engine.get("in_process"):
-        # OpenVINOはPythonパッケージとして提供されるため、Windows専用ではなく
-        # パッケージがインポートできるか、モデル用フォルダがあるかで判定する
         try:
-            import openvino  # noqa: F401
-        except ImportError:
+            if engine.get("runtime") == "onnxruntime":
+                import onnxruntime as ort
+                if engine["provider"] not in ort.get_available_providers():
+                    return False
+            else:
+                import openvino  # noqa: F401
+        except (ImportError, OSError):
             return False
         models_dir = get_ai_upscale_dir() / engine["models_subdir"]
-        return models_dir.exists()
+        return models_dir.exists() and any(
+            (models_dir / f"{name}.onnx").exists() for name in engine["models"]
+        )
     if sys.platform != "win32":
         return False
     exe = get_ai_upscale_dir() / engine["exe_name"]
@@ -212,7 +245,7 @@ def is_engine_available(engine_key):
 
 
 def is_ai_upscale_available():
-    """いずれかのエンジンが1つでも使えるか（Windows専用）"""
+    """いずれかのエンジンが1つでも使えるか。"""
     return any(is_engine_available(k) for k in ENGINES)
 
 
@@ -346,6 +379,8 @@ def build_command(engine_key, exe_path, models_dir, input_path, output_path, mod
 _openvino_core = None
 _openvino_model_cache = {}  # (model_path文字列, device) -> コンパイル済みモデル
 _openvino_cache_lock = threading.Lock()
+_onnx_model_cache = {}
+_onnx_cache_lock = threading.Lock()
 
 
 def get_openvino_devices():
@@ -354,7 +389,8 @@ def get_openvino_devices():
     try:
         import openvino as ov
         core = ov.Core()
-        return list(core.available_devices)
+        devices = list(core.available_devices)
+        return list(dict.fromkeys(devices))
     except Exception:
         return []
 
@@ -410,6 +446,125 @@ def run_openvino_inference(model_name, device, image: QImage) -> QImage:
     out_h, out_w = out.shape[0], out.shape[1]
     out_image = QImage(out.data, out_w, out_h, out_w * 3, QImage.Format_RGB888)
     return out_image.copy()  # numpy配列(out)の寿命に依存しないようコピーする
+
+
+def get_onnxruntime_providers():
+    """現在のONNX Runtime wheelで利用できるExecution Providerを返す。"""
+    try:
+        import onnxruntime as ort
+        return list(ort.get_available_providers())
+    except (ImportError, OSError):
+        return []
+
+
+def _get_onnx_session(model_path, provider):
+    import onnxruntime as ort
+    key = (str(model_path), provider)
+    with _onnx_cache_lock:
+        if key not in _onnx_model_cache:
+            options = ort.SessionOptions()
+            if provider == "DmlExecutionProvider":
+                options.enable_mem_pattern = False
+                options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            _onnx_model_cache[key] = ort.InferenceSession(
+                str(model_path), sess_options=options,
+                providers=[provider, "CPUExecutionProvider"],
+            )
+        return _onnx_model_cache[key]
+
+
+def _qimage_to_nchw(image):
+    rgb = image.convertToFormat(QImage.Format_RGB888)
+    w, h = rgb.width(), rgb.height()
+    bpl = rgb.bytesPerLine()
+    ptr = rgb.constBits()
+    if hasattr(ptr, "setsize"):
+        ptr.setsize(bpl * h)
+    arr = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape(h, bpl)[:, :w * 3]
+    return arr.reshape(h, w, 3).astype(np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
+
+
+def _nchw_to_qimage(result):
+    out = np.clip(result[0].transpose(1, 2, 0), 0, 1) * 255.0
+    out = np.ascontiguousarray(out.astype(np.uint8))
+    h, w = out.shape[:2]
+    return QImage(out.data, w, h, w * 3, QImage.Format_RGB888).copy()
+
+
+def run_onnxruntime_inference(engine_key, model_name, image):
+    engine = ENGINES[engine_key]
+    model_path = get_ai_upscale_dir() / engine["models_subdir"] / f"{model_name}.onnx"
+    if not model_path.exists():
+        raise FileNotFoundError(f"モデルが見つかりません: {model_path}")
+    session = _get_onnx_session(model_path, engine["provider"])
+    input_name = session.get_inputs()[0].name
+    result = session.run(None, {input_name: _qimage_to_nchw(image)})[0]
+    return _nchw_to_qimage(result)
+
+
+def benchmark_available_backends(sample_size=64):
+    """実際に利用可能なエンジンを同じ小画像で1回ずつ測定し、速い順に返す。"""
+    image = QImage(sample_size, sample_size, QImage.Format_RGB888)
+    image.fill(0xFF808080)
+    results = []
+    for engine_key, label in get_available_engines().items():
+        models = get_available_models(engine_key)
+        if not models:
+            continue
+        model_name = next(iter(models))
+        engine = ENGINES[engine_key]
+        candidates = [None]
+        if engine_key == "openvino":
+            candidates = ["AUTO"] + get_openvino_devices()
+        for device in dict.fromkeys(candidates):
+            started = time.perf_counter()
+            try:
+                if engine_key == "openvino":
+                    run_openvino_inference(model_name, device or "AUTO", image)
+                    started = time.perf_counter()
+                    run_openvino_inference(model_name, device or "AUTO", image)
+                elif engine.get("runtime") == "onnxruntime":
+                    run_onnxruntime_inference(engine_key, model_name, image)
+                    started = time.perf_counter()
+                    run_onnxruntime_inference(engine_key, model_name, image)
+                else:
+                    ai_dir = get_ai_upscale_dir()
+                    with tempfile.TemporaryDirectory(prefix="axv_benchmark_") as tmp:
+                        tmp = Path(tmp)
+                        input_path, output_path = tmp / "input.png", tmp / "output.png"
+                        image.save(str(input_path), "PNG")
+                        cmd = build_command(
+                            engine_key, ai_dir / engine["exe_name"],
+                            get_models_dir_for_engine(engine_key), input_path,
+                            output_path, model_name,
+                        )
+                        completed = subprocess.run(
+                            cmd, cwd=str(ai_dir), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=120,
+                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                        )
+                        if completed.returncode != 0 or not output_path.exists():
+                            raise RuntimeError(completed.stderr.decode("utf-8", errors="replace")[:200])
+                elapsed = time.perf_counter() - started
+                results.append({
+                    "engine": engine_key, "model": model_name, "device": device,
+                    "label": label + (f" / {device}" if device else ""),
+                    "seconds": round(elapsed, 4), "ok": True,
+                })
+            except Exception as exc:
+                results.append({
+                    "engine": engine_key, "model": model_name, "device": device,
+                    "label": label + (f" / {device}" if device else ""),
+                    "seconds": None, "ok": False, "error": str(exc)[:240],
+                })
+    return sorted(results, key=lambda item: (not item["ok"], item["seconds"] or float("inf")))
+
+
+class BackendBenchmarkWorker(QObject):
+    finished = Signal(object)
+
+    def run(self):
+        self.finished.emit(benchmark_available_backends())
 
 
 # ============================================================
@@ -491,7 +646,7 @@ class AIUpscaleWorker(QObject):
             self.failed.emit(self.request_token, f"実行ファイルが見つかりません: {exe_path}")
             return
 
-        tmp_dir = Path(tempfile.mkdtemp(prefix="archive_viewer_ai_"))
+        tmp_dir = Path(tempfile.mkdtemp(prefix="axv_ai_"))
         current_image = self.image
 
         creationflags = 0
@@ -601,7 +756,7 @@ class AIUpscaleWorker(QObject):
                 pass
 
     def _run_in_process(self, engine):
-        """OpenVINOのように、サブプロセスではなくこのPythonプロセス内で直接推論する
+        """OpenVINO/ONNX Runtimeを、このPythonプロセス内で直接実行する
         エンジン向けの実行ルート。一時ファイルの入出力が不要な分、ncnn-vulkan系より
         オーバーヘッドが少ない。キャンセルは各パスの開始前にのみチェックする
         (1回の推論自体は短時間で終わるため、途中中断は行わない)。"""
@@ -616,7 +771,12 @@ class AIUpscaleWorker(QObject):
 
                 self.progress.emit(self.request_token, pass_index + 1, self.passes)
 
-                current_image = run_openvino_inference(self.model_name, device, current_image)
+                if engine.get("runtime") == "onnxruntime":
+                    current_image = run_onnxruntime_inference(
+                        self.engine_key, self.model_name, current_image
+                    )
+                else:
+                    current_image = run_openvino_inference(self.model_name, device, current_image)
                 if self._cancel_requested:
                     self.cancelled.emit(self.request_token)
                     return
@@ -626,7 +786,10 @@ class AIUpscaleWorker(QObject):
             self.finished.emit(self.request_token, current_image, self.engine_key, self.model_name)
 
         except Exception as e:
-            self.failed.emit(self.request_token, f"OpenVINO処理でエラーが発生しました: {e}")
+            self.failed.emit(
+                self.request_token,
+                f"{engine['label']}処理でエラーが発生しました: {e}"
+            )
 
 
 class BatchAIUpscaleWorker(QObject):
@@ -639,7 +802,7 @@ class BatchAIUpscaleWorker(QObject):
     そちらは常に単体処理のAIUpscaleWorkerを使う)。背景で先読みしている、
     同じengine/model/passesの複数ページ分をまとめる時だけ使う想定。
 
-    in_process系エンジン(OpenVINO)はサブプロセスを起動しないので対象外。"""
+    in_process系エンジン(OpenVINO/ONNX Runtime)はサブプロセスを起動しないので対象外。"""
     item_finished = Signal(object, QImage)  # (cache_key, 最終結果画像) - 完了したものから順次
     batch_finished = Signal()               # 全件処理完了(キャンセル・失敗以外)
     failed = Signal(str)                    # バッチ全体が失敗した場合のメッセージ
@@ -678,7 +841,7 @@ class BatchAIUpscaleWorker(QObject):
             return
         engine = ENGINES[self.engine_key]
         if engine.get("in_process"):
-            self.failed.emit("バッチ処理はin_process系エンジン(OpenVINO)には対応していません")
+            self.failed.emit("バッチ処理はプロセス内推論エンジンには対応していません")
             return
         if not self.items:
             self.batch_finished.emit()
@@ -690,7 +853,7 @@ class BatchAIUpscaleWorker(QObject):
             self.failed.emit(f"実行ファイルが見つかりません: {exe_path}")
             return
 
-        tmp_root = Path(tempfile.mkdtemp(prefix="archive_viewer_ai_batch_"))
+        tmp_root = Path(tempfile.mkdtemp(prefix="axv_ai_batch_"))
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
         try:

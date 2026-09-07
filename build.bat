@@ -6,6 +6,7 @@ set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
 
 set "BUILD_MODE=fast"
+set "AI_BACKEND=%~2"
 if /I "%~1"=="debug" set "BUILD_MODE=debug"
 if /I "%~1"=="final" set "BUILD_MODE=final"
 
@@ -37,21 +38,32 @@ if not exist "%PYEXE%" (
 echo [2/4] Installing build dependencies...
 "%PYEXE%" -m pip install --no-cache-dir -r requirements-build.txt
 if errorlevel 1 exit /b 1
+if not "%AI_BACKEND%"=="" (
+  if not exist "requirements-%AI_BACKEND%.txt" (
+    echo [ERROR] Unknown AI backend: %AI_BACKEND%
+    exit /b 1
+  )
+  echo Installing optional %AI_BACKEND% backend...
+  if /I "%AI_BACKEND%"=="directml" "%PYEXE%" -m pip uninstall -y onnxruntime-gpu >nul 2>&1
+  if /I "%AI_BACKEND%"=="cuda" "%PYEXE%" -m pip uninstall -y onnxruntime-directml >nul 2>&1
+  "%PYEXE%" -m pip install --no-cache-dir -r "requirements-%AI_BACKEND%.txt"
+  if errorlevel 1 exit /b 1
+)
 
-echo [3/4] Building ArchiveViewer...
+echo [3/4] Building aXv...
 if /I "%BUILD_MODE%"=="final" (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name aXv viewer.py
 ) else if /I "%BUILD_MODE%"=="debug" (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --console --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --console --name aXv viewer.py
 ) else (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --windowed --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --windowed --name aXv viewer.py
 )
 if errorlevel 1 exit /b 1
 
 if /I "%BUILD_MODE%"=="final" (
   set "OUT_DIR=dist"
 ) else (
-  set "OUT_DIR=dist\ArchiveViewer"
+  set "OUT_DIR=dist\aXv"
 )
 
 echo [4/4] Copying notices and optional local assets...

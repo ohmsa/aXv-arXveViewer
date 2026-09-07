@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Archive Image Viewer - シンプル版
+arχveViewer (aXv)
 - ZIP / RAR をドラッグ&ドロップで開く
 - パスワード付きZIPは password_list.txt に書いたパスワードを順に試す
 - 画像は等倍(1:1)表示（ウィンドウより大きい場合はスクロール）
@@ -15,14 +15,8 @@ RAR を扱うには unrar (または unar) コマンドが別途必要です。
     Linux:   sudo apt install unrar (または unar)
 """
 
-# ビルドの目印。デバッグログにこれを出すことで、実行中のexeが最新のviewer.pyを
-# 反映したものかどうかを確認できる(古いビルドのまま再ビルドし忘れている、等の
-# 診断に使う)。修正のたびに、このソースコードを書いた日時で更新する。
-# 形式: YY(年2桁) + 月をA=1月,B=2月,...,L=12月で表した1文字 + DD(日) + "-" + HHMM(時刻)
-# 例: 2026年8月13日 06:48 -> "26H13-0648" (8月=8番目の文字=H)
-APP_NAME = "arXveViewer"
+APP_NAME = "arχveViewer"
 APP_VERSION = "0.1.0"
-BUILD_MARKER = "26I07-debug1"
 
 import sys
 import subprocess
@@ -91,7 +85,9 @@ def _setup_debug_logging():
     log_path = _get_debug_log_path()
     try:
         log_file = open(log_path, "a", encoding="utf-8", buffering=1)
-        log_file.write(f"\n\n===== 起動: {datetime.now().isoformat()} (BUILD_MARKER={BUILD_MARKER}) =====\n")
+        log_file.write(
+            f"\n\n===== {APP_NAME} {APP_VERSION} 起動: {datetime.now().isoformat()} =====\n"
+        )
         sys.stdout = _TeeStream(sys.stdout, log_file)
         sys.stderr = _TeeStream(sys.stderr, log_file)
     except Exception:
@@ -118,7 +114,7 @@ from ai_upscale import (
     AIUpscaleWorker, BatchAIUpscaleWorker, is_ai_upscale_available, is_engine_available,
     get_available_engines, get_available_models, get_model_info, ENGINES,
     estimate_noise_level, should_use_ai_upscale, DEFAULT_ENGINE, DEFAULT_MODEL,
-    get_openvino_devices, NOISE_THRESHOLD_SKIP_AI
+    get_openvino_devices, NOISE_THRESHOLD_SKIP_AI, BackendBenchmarkWorker
 )
 
 from PySide6.QtWidgets import (
@@ -185,7 +181,8 @@ if HAS_RARFILE:
 # パスワードの保存先。「保存していることが分かりにくい」ことを重視し、
 # OSの資格情報マネージャー(Windows: 資格情報マネージャー、keyring経由)を
 # 優先して使う。サービス名/ユーザー名にも「パスワード」という語を避けている。
-_KEYRING_SERVICE = "arXveViewer"
+_KEYRING_SERVICE = "aXv"
+_LEGACY_KEYRING_SERVICE = "arXveViewer"
 _KEYRING_USERNAME = "archive_cache"
 
 
@@ -199,6 +196,10 @@ def load_password_list():
     if HAS_KEYRING:
         try:
             stored = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME)
+            if stored is None:
+                stored = keyring.get_password(_LEGACY_KEYRING_SERVICE, _KEYRING_USERNAME)
+                if stored is not None:
+                    keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, stored)
             if stored is not None:
                 return [line for line in stored.split("\n") if line.strip()]
         except Exception:
@@ -241,8 +242,8 @@ DEFAULT_SETTINGS = {
     "rotation": 0,            # 0, 90, 180, 270（時計回り）
     "keybinds": {},          # {action_id: "Ctrl+O", ...} 未設定分はデフォルト値を使う
     "auto_resize_window": False,  # 画像に合わせてウィンドウサイズを自動調整するか
-    "ai_upscale_enabled": False,   # AIアップスケールを使うか(Windows+Vulkan GPU限定)
-    "ai_upscale_engine": "realesrgan",  # 使うエンジン(realesrgan/realcugan/waifu2x)
+    "ai_upscale_enabled": False,   # AIアップスケールを使うか
+    "ai_upscale_engine": "realesrgan",  # 使用する推論エンジン
     "ai_upscale_model": "realesrgan-x4plus-anime",  # 使うモデル
     "prefetch_window": 2,       # 通常のデコード先読み: 前後何ページ分保持するか
     "ai_prefetch_depth": 5,     # AI処理の先読み: 現在位置から何ページ先まで事前処理するか(-1=アーカイブ全体)
@@ -252,6 +253,8 @@ DEFAULT_SETTINGS = {
     "ai_target_height": 1080,   # ai_target_mode="manual"の時の目標高さ(px)
     "ai_gpu_id": "auto",         # 使うGPUのインデックス("auto"/"0"/"1"/...)。内蔵+外付けGPU環境向け
     "ai_openvino_device": "AUTO",  # OpenVINOエンジン用のデバイス("AUTO"/"CPU"/"GPU"/"NPU"等)
+    "ai_backend_rankings": [],
+    "ai_benchmark_completed": False,
     "ai_denoise_mode": "auto",    # "off"/"on"/"auto" (Dキーで切替)
     "ai_upscale_mode": "target",  # "off"/"on"/"count"/"target"/"undershoot"/"overshoot" (Uキーで切替)
     "ai_upscale_fixed_count": 1,  # ai_upscale_mode="count"の時の固定パス数
@@ -1138,7 +1141,7 @@ class FolderBrowserWidget(QWidget):
 class ImageViewer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Archive Image Viewer")
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(900, 700)
         self.setAcceptDrops(True)
 
@@ -1171,6 +1174,12 @@ class ImageViewer(QMainWindow):
         self.ai_target_height = self.settings.get("ai_target_height", 1080)
         self.ai_gpu_id = self.settings.get("ai_gpu_id", "auto")
         self.ai_openvino_device = self.settings.get("ai_openvino_device", "AUTO")
+        self.ai_backend_rankings = self.settings.get("ai_backend_rankings", [])
+        self._benchmark_thread_ref = None
+        self._benchmark_rank_label = None
+        self._benchmark_engine_combo = None
+        self._benchmark_model_combo = None
+        self._benchmark_openvino_device_combo = None
         self.ai_denoise_mode = self.settings.get("ai_denoise_mode", "auto")
         self.ai_upscale_mode = self.settings.get("ai_upscale_mode", "target")
         self.ai_upscale_fixed_count = self.settings.get("ai_upscale_fixed_count", 1)
@@ -1405,6 +1414,79 @@ class ImageViewer(QMainWindow):
         # 前回終了時の「常に手前に表示」設定を復元
         if self.settings.get("always_on_top", False):
             self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+
+        if not self.settings.get("ai_benchmark_completed", False):
+            QTimer.singleShot(1500, self._start_backend_benchmark)
+
+    def _format_backend_rankings(self):
+        if not self.ai_backend_rankings:
+            return "未測定（AIモデルを配置すると測定できます）"
+        lines = []
+        rank = 0
+        for item in self.ai_backend_rankings:
+            if item.get("ok"):
+                rank += 1
+                lines.append(f"{rank}位: {item['label']} — {item['seconds']:.3f}秒")
+            else:
+                lines.append(f"除外: {item['label']} — {item.get('error', '利用不可')}")
+        return "\n".join(lines)
+
+    def _start_backend_benchmark(self, force=False):
+        if self._benchmark_thread_ref is not None:
+            return
+        if not force and self.settings.get("ai_benchmark_completed", False):
+            return
+        if not is_ai_upscale_available():
+            return
+        if self._benchmark_rank_label is not None:
+            self._benchmark_rank_label.setText("測定中…")
+        thread = QThread(self)
+        worker = BackendBenchmarkWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_backend_benchmark_finished)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(lambda: self._cleanup_benchmark_thread(thread, worker))
+        self._benchmark_thread_ref = (thread, worker)
+        thread.start()
+
+    def _on_backend_benchmark_finished(self, results):
+        self.ai_backend_rankings = list(results)
+        successful = [item for item in results if item.get("ok")]
+        self.settings["ai_backend_rankings"] = self.ai_backend_rankings
+        self.settings["ai_benchmark_completed"] = bool(successful)
+        if successful:
+            best = successful[0]
+            previous_engine = self.ai_upscale_engine
+            self.ai_upscale_engine = best["engine"]
+            self.ai_upscale_model = best["model"]
+            self.settings["ai_upscale_engine"] = self.ai_upscale_engine
+            self.settings["ai_upscale_model"] = self.ai_upscale_model
+            if best["engine"] == "openvino" and best.get("device"):
+                self.ai_openvino_device = best["device"]
+                self.settings["ai_openvino_device"] = self.ai_openvino_device
+            if previous_engine != self.ai_upscale_engine and self.reader is not None:
+                self._invalidate_ai_work()
+        save_settings(self.settings)
+        if self._benchmark_rank_label is not None:
+            self._benchmark_rank_label.setText(self._format_backend_rankings())
+        if self._benchmark_engine_combo is not None:
+            index = self._benchmark_engine_combo.findData(self.ai_upscale_engine)
+            if index >= 0:
+                self._benchmark_engine_combo.setCurrentIndex(index)
+                model_index = self._benchmark_model_combo.findData(self.ai_upscale_model)
+                if model_index >= 0:
+                    self._benchmark_model_combo.setCurrentIndex(model_index)
+        if self._benchmark_openvino_device_combo is not None:
+            index = self._benchmark_openvino_device_combo.findData(self.ai_openvino_device)
+            if index >= 0:
+                self._benchmark_openvino_device_combo.setCurrentIndex(index)
+
+    def _cleanup_benchmark_thread(self, thread, worker):
+        if self._benchmark_thread_ref == (thread, worker):
+            self._benchmark_thread_ref = None
+        worker.deleteLater()
+        thread.deleteLater()
 
     def _build_keybindable_actions(self):
         """KEYBINDABLE_ACTIONSからQActionを作り、self.addAction()でウィンドウに
@@ -1892,7 +1974,7 @@ class ImageViewer(QMainWindow):
         self.render_current_pixmap()
 
         self.setWindowTitle(
-            f"Archive Image Viewer - {name} "
+            f"{APP_NAME} - {name} "
             f"({self.index + 1}/{len(self.reader.image_names)}) "
             f"[{self.original_pixmap.width()}x{self.original_pixmap.height()}] "
             f"zoom={self.zoom_mode} aspect={self.aspect_mode} rot={self.rotation}"
@@ -2189,6 +2271,8 @@ class ImageViewer(QMainWindow):
             if entry is not None:
                 entry[1].request_cancel()
                 entries.append(entry)
+        if self._benchmark_thread_ref is not None:
+            entries.append(self._benchmark_thread_ref)
         for thread, worker in entries:
             thread.quit()
         if any(thread.isRunning() for thread, worker in entries):
@@ -2812,9 +2896,10 @@ class ImageViewer(QMainWindow):
         debug_print(f"[AI QUEUE] single start {cache_key} queued={len(self._ai_queue)}")
 
         thread = QThread(self)
-        if self.ai_upscale_engine == "openvino":
+        engine_info = ENGINES.get(self.ai_upscale_engine, {})
+        if engine_info.get("in_process"):
             gpu_id = None
-            device = self.ai_openvino_device
+            device = self.ai_openvino_device if self.ai_upscale_engine == "openvino" else None
         else:
             gpu_id = None if self.ai_gpu_id == "auto" else int(self.ai_gpu_id)
             device = None
@@ -2860,7 +2945,7 @@ class ImageViewer(QMainWindow):
                     f"(model={model_name}, passes={passes}): {sorted(k[0] for k in self._batch_pending_keys)}")
 
         thread = QThread(self)
-        if self.ai_upscale_engine == "openvino":
+        if ENGINES.get(self.ai_upscale_engine, {}).get("in_process"):
             gpu_id = None
         else:
             gpu_id = None if self.ai_gpu_id == "auto" else int(self.ai_gpu_id)
@@ -4237,6 +4322,18 @@ class ImageViewer(QMainWindow):
             batch_note.setStyleSheet("color: #888; font-size: 11px;")
             ai_layout.addRow(batch_note)
 
+            benchmark_label = QLabel(self._format_backend_rankings())
+            benchmark_label.setWordWrap(True)
+            self._benchmark_rank_label = benchmark_label
+            self._benchmark_engine_combo = ai_engine_combo
+            self._benchmark_model_combo = ai_model_combo
+            benchmark_button = QPushButton("ベンチマークを再実行")
+            benchmark_button.clicked.connect(
+                lambda: self._start_backend_benchmark(force=True)
+            )
+            ai_layout.addRow("自動選択順位:", benchmark_label)
+            ai_layout.addRow("", benchmark_button)
+
             ai_layout.addRow("エンジン:", ai_engine_combo)
             ai_layout.addRow("モデル:", ai_model_combo)
 
@@ -4260,8 +4357,14 @@ class ImageViewer(QMainWindow):
 
             # ---- OpenVINOエンジン専用: デバイス選択(CPU/GPU/NPU等) ----
             ai_openvino_device_combo = QComboBox()
+            self._benchmark_openvino_device_combo = ai_openvino_device_combo
             ai_openvino_device_combo.addItem("自動選択(AUTO)", "AUTO")
-            for dev in get_openvino_devices():
+            openvino_devices = get_openvino_devices()
+            if "GPU" in openvino_devices and "CPU" in openvino_devices:
+                ai_openvino_device_combo.addItem(
+                    "Intel GPU優先、CPUフォールバック", "AUTO:GPU,CPU"
+                )
+            for dev in openvino_devices:
                 ai_openvino_device_combo.addItem(dev, dev)
             idx = ai_openvino_device_combo.findData(self.ai_openvino_device)
             if idx >= 0:
@@ -4270,16 +4373,18 @@ class ImageViewer(QMainWindow):
             ai_layout.addRow(openvino_row_label, ai_openvino_device_combo)
 
             openvino_note = QLabel(
-                "NPU/Arc GPU等、Intelの専用回路を活用できます。\n"
-                "「自動選択」はOpenVINOが自動でデバイスを選びます。"
+                "AUTOはOpenVINOが利用可能なIntel CPU/GPUから選択します。\n"
+                "NPUは既定のAUTO候補外なので、表示されたNPUを明示選択してください。"
             )
             openvino_note.setStyleSheet("color: #888; font-size: 11px;")
             ai_layout.addRow(openvino_note)
 
             def update_engine_specific_rows():
-                is_openvino = ai_engine_combo.currentData() == "openvino"
+                selected_engine = ai_engine_combo.currentData()
+                is_openvino = selected_engine == "openvino"
+                is_ncnn = not ENGINES.get(selected_engine, {}).get("in_process")
                 for w in (gpu_row_label, ai_gpu_combo, gpu_note):
-                    w.setVisible(not is_openvino)
+                    w.setVisible(is_ncnn)
                 for w in (openvino_row_label, ai_openvino_device_combo, openvino_note):
                     w.setVisible(is_openvino)
 
@@ -4293,7 +4398,7 @@ class ImageViewer(QMainWindow):
                 "AI処理が終わると自動的に高精細な結果に切り替わります。\n"
                 "手動モードにすると、ズーム操作のたびにAI処理をやり直さず、\n"
                 "指定した幅まで一度だけアップスケールします。\n"
-                "GPU(Vulkan対応)が必要です。"
+                "Vulkan、DirectML、CUDA、OpenVINOから利用可能なものを選べます。"
             )
             note.setStyleSheet("color: #888; font-size: 11px;")
             ai_layout.addRow(note)
@@ -4384,7 +4489,12 @@ class ImageViewer(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         outer_layout.addWidget(buttons)
 
-        if dialog.exec() == QDialog.Accepted:
+        dialog_result = dialog.exec()
+        self._benchmark_rank_label = None
+        self._benchmark_engine_combo = None
+        self._benchmark_model_combo = None
+        self._benchmark_openvino_device_combo = None
+        if dialog_result == QDialog.Accepted:
             self.settings["natural_sort"] = natural_sort_checkbox.isChecked()
 
             self.fullscreen_exit_mode = fullscreen_exit_combo.currentData()

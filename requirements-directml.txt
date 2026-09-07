@@ -1,0 +1,2 @@
+-r requirements.txt
+onnxruntime-directml>=1.20,<2

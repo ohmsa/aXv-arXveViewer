@@ -1,4 +1,4 @@
-# AIUpscaler
+# arχveViewer (aXv)
 
 Windows向けの画像・アーカイブビューアです。フォルダ、ZIP、RAR、7z内の画像を表示し、任意に外部AIエンジンで現在画像と後続画像をアップスケールします。GUIはPySide6です。TLG5/TLG6も純Pythonデコーダーで表示できます。
 
@@ -14,15 +14,18 @@ AIエンジンの有無にかかわらず、通常画像は最大4スレッド�
 2. ZIPを通常のフォルダへ展開する
 3. 展開先の `build.bat` をダブルクリックする
 4. 初回のPython・依存ライブラリ取得とビルドが終わるまで待つ
-5. `dist\ArchiveViewer\ArchiveViewer.exe` を起動する
+5. `dist\aXv\aXv.exe` を起動する
 
 `build.bat` はプロジェクト内の `python_embed/` にPython 3.11を取得して使います。システム全体へPythonをインストールする必要はありません。初回はインターネット接続が必要です。
 
 | 実行するファイル | 出力 | 用途 |
 |---|---|---|
-| `build.bat` | `dist\ArchiveViewer\ArchiveViewer.exe` | 通常版、ビルドが比較的速い |
-| `build_debug.bat` | `dist\ArchiveViewer\ArchiveViewer.exe` | コンソール付きデバッグ版 |
-| `build_final.bat` | `dist\ArchiveViewer.exe` | 配布向け単一EXE版 |
+| `build.bat` | `dist\aXv\aXv.exe` | 通常版、ビルドが比較的速い |
+| `build_debug.bat` | `dist\aXv\aXv.exe` | コンソール付きデバッグ版 |
+| `build_final.bat` | `dist\aXv.exe` | 配布向け単一EXE版 |
+| `build_directml.bat` | `dist\aXv\aXv.exe` | AMD/NVIDIA/Intel向けDirectML版 |
+| `build_cuda.bat` | `dist\aXv\aXv.exe` | NVIDIA向けCUDA版 |
+| `build_openvino.bat` | `dist\aXv\aXv.exe` | Intel CPU/GPU/NPU向けOpenVINO版 |
 
 AIエンジンを使わない場合でも、画像・アーカイブ・TLGビューアとしてビルドして実行できます。RARには、別途導入した `unrar` など、rarfileが利用できるコマンドが必要です。
 
@@ -38,6 +41,20 @@ python viewer.py
 ```
 
 OpenVINOも使う場合は、追加で `python -m pip install -r requirements-openvino.txt` を実行します。
+
+DirectMLまたはCUDAを使う場合は、どちらか一方を選びます。
+
+```powershell
+# AMD/NVIDIA/Intel: Windows DirectML
+python -m pip install -r requirements-directml.txt
+
+# NVIDIA専用: CUDA
+python -m pip install -r requirements-cuda.txt
+```
+
+`onnxruntime-directml`と`onnxruntime-gpu`は同じPythonモジュールを提供するため、同じ環境へ同時に導入しないでください。切り替える場合は`.venv`または`python_embed`を作り直します。
+
+利用可能なAIモデルがある状態で初回起動すると、小さな画像を使って利用可能バックエンドを測定します。結果は設定画面へ速い順に表示され、最速のバックエンドが自動選択されます。設定画面から別のエンジン・OpenVINOデバイスを選択したり、ベンチマークを再実行したりできます。
 
 ## AIエンジンの準備
 
