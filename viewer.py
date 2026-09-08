@@ -20,7 +20,7 @@ RAR を扱うには unrar (または unar) コマンドが別途必要です。
 # 診断に使う)。修正のたびに、このソースコードを書いた日時で更新する。
 # 形式: YY(年2桁) + 月をA=1月,B=2月,...,L=12月で表した1文字 + DD(日) + "-" + HHMM(時刻)
 # 例: 2026年8月13日 06:48 -> "26H13-0648" (8月=8番目の文字=H)
-BUILD_MARKER = "26I07-debug1"
+BUILD_MARKER = "26I08-single-pass-qt-fullscreen"
 
 import sys
 import subprocess
@@ -88,7 +88,9 @@ def _get_debug_log_path():
 def _setup_debug_logging():
     log_path = _get_debug_log_path()
     try:
-        log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+        # 詳細ログごとのディスクflushはAI処理中のI/O競合を招くため、64 KiB単位で
+        # バッファする。プロセス終了時にはPythonが自動的にflushする。
+        log_file = open(log_path, "a", encoding="utf-8", buffering=65536)
         log_file.write(f"\n\n===== 起動: {datetime.now().isoformat()} (BUILD_MARKER={BUILD_MARKER}) =====\n")
         sys.stdout = _TeeStream(sys.stdout, log_file)
         sys.stderr = _TeeStream(sys.stderr, log_file)
@@ -107,7 +109,7 @@ def debug_print(msg):
     """デバッグ用出力の共通口。_debug_state["enabled"]がTrueの間だけ実際にprintする。
     ai_upscale.py側にも同名の仕組みがあり、Options画面から両方まとめて切り替える。"""
     if _debug_state["enabled"]:
-        print(msg, flush=True)
+        print(msg)
 
 
 from tlg_decoder import decode_tlg
@@ -125,7 +127,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QFileDialog, QKeySequenceEdit, QPushButton, QGroupBox,
     QHBoxLayout, QStackedWidget, QGridLayout, QToolButton, QStyle, QSizePolicy,
     QLineEdit, QButtonGroup, QComboBox, QSpinBox, QTabWidget, QSlider,
-    QListWidget, QPlainTextEdit
+    QListWidget, QPlainTextEdit, QFrame
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QDragEnterEvent, QDropEvent, QKeySequence,
@@ -232,18 +234,19 @@ def save_password_list(passwords):
 # レジストリを使わず、exeと同じ場所のJSONファイルに保存する
 # （「環境を汚さない」という方針に合わせるため）
 DEFAULT_SETTINGS = {
+    "settings_version": 2,
     "natural_sort": True,  # ファイル名を自然順(1,2,...,10)でソートするか
     "always_on_top": False,
-    "zoom_mode": "100",       # "100" または "fit"、あるいは任意のパーセンテージ文字列
+    "zoom_mode": "fit",       # "100" または "fit"、あるいは任意のパーセンテージ文字列
     "aspect_mode": "original",  # "original", "4:3", "16:9"
     "rotation": 0,            # 0, 90, 180, 270（時計回り）
     "keybinds": {},          # {action_id: "Ctrl+O", ...} 未設定分はデフォルト値を使う
     "auto_resize_window": False,  # 画像に合わせてウィンドウサイズを自動調整するか
-    "ai_upscale_enabled": False,   # AIアップスケールを使うか(Windows+Vulkan GPU限定)
-    "ai_upscale_engine": "realesrgan",  # 使うエンジン(realesrgan/realcugan/waifu2x)
-    "ai_upscale_model": "realesrgan-x4plus-anime",  # 使うモデル
+    "ai_upscale_enabled": True,   # AIアップスケールを使うか(Windows+Vulkan GPU限定)
+    "ai_upscale_engine": "realcugan",  # 使うエンジン(realesrgan/realcugan/waifu2x/openvino)
+    "ai_upscale_model": "up2x-no-denoise",  # 使うモデル
     "prefetch_window": 2,       # 通常のデコード先読み: 前後何ページ分保持するか
-    "ai_prefetch_depth": 5,     # AI処理の先読み: 現在位置から何ページ先まで事前処理するか(-1=アーカイブ全体)
+    "ai_prefetch_depth": -1,    # AI処理の先読み: -1でアーカイブ全体
     "vram_mode_enabled": False,  # VRAM展開モード(OpenGLハードウェア描画、実験的)
     "ai_target_mode": "auto",   # "auto"(現在のズーム/画面解像度に合わせる) または "manual"
     "ai_target_width": 1920,    # ai_target_mode="manual"の時の目標幅(px)
@@ -253,13 +256,26 @@ DEFAULT_SETTINGS = {
     "ai_denoise_mode": "auto",    # "off"/"on"/"auto" (Dキーで切替)
     "ai_upscale_mode": "target",  # "off"/"on"/"count"/"target"/"undershoot"/"overshoot" (Uキーで切替)
     "ai_upscale_fixed_count": 1,  # ai_upscale_mode="count"の時の固定パス数
-    "fullscreen_exit_mode": "keep",  # 全画面終了時: "keep"(直前のサイズ) / "100"(画像の100%サイズ)
-    "ai_diff_based_enabled": False,  # 差分ベースAI高速化(前ページと似ている場合、変化部分だけ処理する)
-    "skip_low_res_enabled": False,  # 低解像度画像を先読み/AI処理の対象から除外するか
-    "skip_low_res_threshold": 100,  # 幅または高さがこの値未満ならスキップ対象
-    "passed_pages_keep_count": 3,  # 現在位置より後ろ(通り過ぎた)のページを、何ページ分まで残すか
+    "fullscreen_exit_mode": "100",  # 全画面終了時: "keep"(直前のサイズ) / "100"(画像の100%サイズ)
+    "skip_low_res_enabled": True,  # 低解像度画像を先読み/AI処理の対象から除外するか
+    "skip_low_res_threshold": 300,  # 幅または高さがこの値未満ならスキップ対象
+    "passed_pages_keep_count": -1,  # -1なら通り過ぎたページも無制限に保持
     "ai_batch_processing_enabled": True,  # 背景の先読み分を複数枚まとめて1回のプロセス起動で処理するか
     "ai_batch_min_size": 2,  # これ未満の件数ならバッチ化せず単体処理する
+}
+
+SETTINGS_V2_OVERRIDES = {
+    "settings_version": 2,
+    "zoom_mode": "fit",
+    "ai_upscale_enabled": True,
+    "ai_upscale_engine": "realcugan",
+    "ai_upscale_model": "up2x-no-denoise",
+    "ai_prefetch_depth": -1,
+    "fullscreen_exit_mode": "100",
+    "skip_low_res_enabled": True,
+    "skip_low_res_threshold": 300,
+    "passed_pages_keep_count": -1,
+    "ai_batch_processing_enabled": True,
 }
 
 ASPECT_MODES = ["original", "4:3", "16:9"]
@@ -281,6 +297,17 @@ def load_settings():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             settings.update(data)
+            if int(data.get("settings_version", 0)) < 2:
+                settings.update(SETTINGS_V2_OVERRIDES)
+                # 旧既定の左右キーが保存されていても、今回指定された向きへ移行する。
+                keybinds = dict(settings.get("keybinds", {}))
+                keybinds.pop("next_page", None)
+                keybinds.pop("prev_page", None)
+                settings["keybinds"] = keybinds
+                path.write_text(
+                    json.dumps(settings, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
         except Exception:
             pass  # 壊れていてもデフォルト値で継続
     return settings
@@ -306,10 +333,12 @@ def natural_sort_key(name):
 # 両方がこのリストを共通の元データとして使う。
 KEYBINDABLE_ACTIONS = [
     ("open_file",       "開く...",              "Ctrl+O",       "open_archive_dialog"),
-    ("next_page",       "次のページ",            "Right",        "next_image"),
-    ("prev_page",       "前のページ",            "Left",         "prev_image"),
+    ("next_page",       "次のページ",            "Left",         "next_image"),
+    ("prev_page",       "前のページ",            "Right",        "prev_image"),
     ("first_page",      "最初のページ",          "Home",         "first_image"),
     ("last_page",       "最後のページ",          "End",          "last_image"),
+    ("prev_folder",     "前のディレクトリ",      ",",            "prev_folder"),
+    ("next_folder",     "次のディレクトリ",      ".",            "next_folder"),
     ("zoom_100",        "実際のサイズ(100%)",    "Ctrl+1",       None),  # ハンドラはset_zoom_modeで個別対応
     ("zoom_fit",        "ウィンドウに合わせる",   "Ctrl+0",       None),
     ("zoom_200",        "200%",                  "Ctrl+2",       None),
@@ -332,15 +361,12 @@ ZOOM_ACTION_IDS = {
 # KEYBINDABLE_ACTIONSは設定変更可能なものだけを載せている。以下は固定の
 # キー/マウス操作(変更不可、主にデバッグ用や直感的な操作)。ショートカット一覧
 # タブでは両方をまとめて表示する。
-# 注意: next_folder/prev_folder/go_up(上のフォルダへ)には、現時点で
-# キーボードショートカットが割り当てられていない(画面クリックまたは
-# 右クリックメニュー/ツールバーボタンのみ)。一覧作成時にこれが判明した。
+# go_up(上のフォルダへ)など、固定操作だけを以下に載せる。
 FIXED_SHORTCUTS = [
     ("次の画像へ", "Space"),
     ("デノイズモード切替", "D"),
     ("アップスケールモード切替", "U"),
     ("デバッグ: AI処理前/後の比較表示切替", "O"),
-    ("デバッグ: 差分ハイライト表示切替(前ページとの変化領域を色反転)", "H"),
     ("AIキュー/キャッシュをリセットして現在ページから再開", "E"),
     ("前の画像/次の画像", "画面クリック(左上=前/右上=次)"),
     ("前のフォルダ/次のフォルダ", "画面クリック(左下=前/右下=次)　※キー割り当て無し"),
@@ -514,11 +540,14 @@ class ArchiveReader:
 
     def _open_and_list_folder(self):
         """フォルダを、そのまま「無圧縮アーカイブ」として扱う。
-        サブフォルダは再帰的に見ず、直下の画像ファイルのみを対象にする
-        (サブフォルダがある場合は、複数フォルダ入りZIPと同様に internal_folders の
-        仕組みで扱いたいところだが、まずは直下の画像一覧をそのまま見せる簡易実装)。"""
+        サブフォルダも再帰的に列挙し、ZIP等と同じinternal_folders機構へ渡す。
+        これにより通常フォルダでも ,/. によるディレクトリ移動が使える。"""
         folder = Path(self.path)
-        names = [p.name for p in folder.iterdir() if p.is_file() and self._is_image(p.name)]
+        names = [
+            p.relative_to(folder).as_posix()
+            for p in folder.rglob("*")
+            if p.is_file() and self._is_image(p.name)
+        ]
         self.image_names = self._sorted(names)
 
     def _open_and_list_single_image(self):
@@ -557,23 +586,43 @@ class ArchiveReader:
         self.image_folder_index = []  # image_names[i]がどのinternal_foldersに属すか(フラットならNone)
 
         folder_of = []
-        seen_folders = []
+        folders_with_images = set()
+        all_folders = set()
         for name in self.image_names:
-            if "/" in name:
-                folder = name.rsplit("/", 1)[0]
+            normalized = name.replace("\\", "/")
+            if "/" in normalized:
+                folder = normalized.rsplit("/", 1)[0]
             else:
                 folder = None
             folder_of.append(folder)
-            if folder is not None and folder not in seen_folders:
-                seen_folders.append(folder)
+            if folder is not None:
+                folders_with_images.add(folder)
+                parts = folder.split("/")
+                for depth in range(1, len(parts) + 1):
+                    all_folders.add("/".join(parts[:depth]))
 
-        if len(seen_folders) <= 1:
-            # フォルダが無い、または実質1つしか無いなら「フォルダ分けあり」とは扱わない
+        if not folders_with_images:
             self.image_folder_index = [None] * len(self.image_names)
             return
 
-        self.internal_folders = seen_folders
-        folder_to_idx = {f: i for i, f in enumerate(seen_folders)}
+        children = {}
+        for folder in all_folders:
+            parent = folder.rsplit("/", 1)[0] if "/" in folder else None
+            children.setdefault(parent, []).append(folder)
+
+        ordered_folders = []
+
+        def visit(parent):
+            for folder in sorted(
+                    children.get(parent, []),
+                    key=lambda f: natural_sort_key(f.rsplit("/", 1)[-1])):
+                if folder in folders_with_images:
+                    ordered_folders.append(folder)
+                visit(folder)
+
+        visit(None)
+        self.internal_folders = ordered_folders
+        folder_to_idx = {f: i for i, f in enumerate(ordered_folders)}
         self.image_folder_index = [folder_to_idx.get(f) for f in folder_of]
 
     def get_folder_of_index(self, index):
@@ -1139,6 +1188,7 @@ class ImageViewer(QMainWindow):
         self.setWindowTitle("Archive Image Viewer")
         self.resize(900, 700)
         self.setAcceptDrops(True)
+        self._pre_fullscreen_was_maximized = False
 
         self.passwords = load_password_list()
         self.settings = load_settings()
@@ -1173,14 +1223,14 @@ class ImageViewer(QMainWindow):
         self.ai_upscale_mode = self.settings.get("ai_upscale_mode", "target")
         self.ai_upscale_fixed_count = self.settings.get("ai_upscale_fixed_count", 1)
         self.fullscreen_exit_mode = self.settings.get("fullscreen_exit_mode", "keep")
-        self.ai_diff_based_enabled = self.settings.get("ai_diff_based_enabled", False)
-        self._pending_diff_composite = {}  # cache_key -> {"base_image":..., "region_scaled":...}
 
         # ---- AIアップスケール関連 ----
         self.ai_upscale_enabled = self.settings.get("ai_upscale_enabled", False)
         self.ai_upscale_engine = self.settings.get("ai_upscale_engine", DEFAULT_ENGINE)
         self.ai_upscale_model = self.settings.get("ai_upscale_model", DEFAULT_MODEL)
         self._ai_cache = {}   # index -> ((rotation, aspect_mode), QPixmap) 先読み結果も含む
+        self._ai_scope_initialized = False
+        self._ai_scope_folder = None  # Noneはアーカイブ/フォルダ最上層
         self._ai_pending_key = None   # 現在バックグラウンドで処理中の状態(重複リクエスト防止用)
         self._closing = False
         self._ai_failed_keys = set()
@@ -1197,7 +1247,6 @@ class ImageViewer(QMainWindow):
         self.current_noise_level = None  # 現在のページのノイズレベル推定値(キャッシュ)
         self.last_ai_error = None  # 直近のAI処理失敗の詳細(プロパティダイアログで確認用)
         self.debug_show_pre_ai = False  # oキーで切替: True中はAI処理前の画像を強制的に表示する
-        self.debug_show_diff_highlight = False  # hキーで切替: 前ページとの差分領域を色反転表示する
         self.skip_low_res_enabled = self.settings.get("skip_low_res_enabled", False)
         self._nav_direction = 0  # next_image/prev_imageから来た時だけ1/-1、それ以外は0(スキップしない)
         self.skip_low_res_threshold = self.settings.get("skip_low_res_threshold", 100)
@@ -1226,6 +1275,7 @@ class ImageViewer(QMainWindow):
         self._sibling_prefetch_threads = {}  # "next"/"prev" -> (QThread, ThumbnailWorker)
         self._prefetch_window = self.settings.get("prefetch_window", 2)  # 現在位置から前後何ページまでキャッシュを保持するか
         self.ai_prefetch_depth = self.settings.get("ai_prefetch_depth", 5)  # AI処理を何ページ先まで先読みするか
+        self._log_runtime_settings("startup")
 
         # ---- ナビゲーション履歴（戻る/進む/上へ） ----
         self.current_folder_path = None
@@ -1236,6 +1286,9 @@ class ImageViewer(QMainWindow):
         self.scroll_area = QScrollArea()
         self.scroll_area.setAlignment(Qt.AlignCenter)
         self.scroll_area.setStyleSheet("background-color: black; border: none;")
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setLineWidth(0)
+        self.scroll_area.viewport().setStyleSheet("background-color: black; border: none;")
         self.image_label = QLabel("ZIP / RAR ファイルをドラッグ&ドロップしてください")
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("background-color: black; color: white;")
@@ -1261,6 +1314,7 @@ class ImageViewer(QMainWindow):
         self.folder_browser.tile_context_menu_requested.connect(self._show_tile_context_menu)
 
         self.stacked = QStackedWidget()
+        self.stacked.setStyleSheet("background-color: black; border: none;")
         self.stacked.addWidget(self.scroll_area)     # index 0: 画像表示
         self.stacked.addWidget(self.folder_browser)   # index 1: フォルダ一覧
 
@@ -1313,6 +1367,7 @@ class ImageViewer(QMainWindow):
         nav_layout.addWidget(self.path_label, stretch=1)
 
         central = QWidget()
+        central.setStyleSheet("background-color: black; border: none;")
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
@@ -1537,13 +1592,15 @@ class ImageViewer(QMainWindow):
         最後の内部フォルダにいる場合は、従来通り同じOSフォルダ内の次のアーカイブへ。"""
         if self.reader is not None and self.reader.internal_folders:
             current_folder = self.reader.get_folder_of_index(self.index)
-            if current_folder is not None and current_folder + 1 < len(self.reader.internal_folders):
-                next_index = self.reader.get_first_index_of_folder(current_folder + 1)
+            next_folder_number = 0 if current_folder is None else current_folder + 1
+            if next_folder_number < len(self.reader.internal_folders):
+                next_index = self.reader.get_first_index_of_folder(next_folder_number)
                 if next_index is not None:
                     self.index = next_index
                     self.show_current_image()
                     return
-                # 次の内部フォルダが見つからない場合のみ、下のOSフォルダ間移動にフォールバックする
+            self._show_osd("アーカイブ内の最後のディレクトリです")
+            return
 
         siblings = self._sibling_archives()
         if not siblings or not self.current_archive_path:
@@ -1570,6 +1627,8 @@ class ImageViewer(QMainWindow):
                     self.index = prev_index
                     self.show_current_image()
                     return
+            self._show_osd("アーカイブ内の最初のディレクトリです")
+            return
 
         siblings = self._sibling_archives()
         if not siblings or not self.current_archive_path:
@@ -1603,6 +1662,8 @@ class ImageViewer(QMainWindow):
         画像キャッシュ・実行中のAIスレッドがどんどん積み上がってしまう
         (実際にユーザー報告のあったメモリリークの原因)。"""
         self._ai_failed_keys.clear()
+        self._ai_scope_initialized = False
+        self._ai_scope_folder = None
         self._reader_generation += 1
         self._prefetch_failed_indices.clear()
         self.original_pixmap = None
@@ -1636,10 +1697,9 @@ class ImageViewer(QMainWindow):
         self._batch_failure_count.clear()  # 別アーカイブの同じページ番号に前の失敗回数を引き継がないようにする
         self._ai_processing_start_time.clear()  # 別アーカイブの同じページ番号に前の開始時刻を引き継ぐと、
                                                  # デバッグ情報の処理時間表示が実際とかけ離れた値になるため
-        self._pending_diff_composite.clear()  # 旧アーカイブの差分合成待ち情報も無効になる
 
     # ---- アーカイブを開く ----
-    def open_archive(self, path, start_at_end=False):
+    def open_archive(self, path, start_at_end=False, start_name=None):
         self._cleanup_archive_state()
 
         # 隣接アーカイブの先読みキャッシュが、これから開くアーカイブと一致するか確認
@@ -1658,11 +1718,34 @@ class ImageViewer(QMainWindow):
             self.reader = None
             return
 
+        debug_print(f"[ARCHIVE] path={path!r} pages={len(self.reader.image_names)} "
+                    f"decoded_cache_policy=whole_archive start_at_end={start_at_end}")
+
         if not self.reader.image_names:
             self.image_label.setText("画像ファイルが見つかりませんでした")
             return
 
         self.index = len(self.reader.image_names) - 1 if start_at_end else 0
+        if start_name is not None:
+            normalized_start = str(start_name).replace("\\", "/")
+            try:
+                self.index = self.reader.image_names.index(normalized_start)
+            except ValueError:
+                debug_print(f"[FOLDER] 開始画像が一覧に見つからないため先頭から表示: {normalized_start}")
+        elif not start_at_end:
+            # 最上層に画像があれば、その一式を最初のAI対象にする。最上層に
+            # 画像が無い場合は、画像を持つ最初の内部ディレクトリから開始する。
+            root_index = next(
+                (i for i, folder_no in enumerate(self.reader.image_folder_index)
+                 if folder_no is None),
+                None,
+            )
+            if root_index is not None:
+                self.index = root_index
+            elif self.reader.internal_folders:
+                first_internal = self.reader.get_first_index_of_folder(0)
+                if first_internal is not None:
+                    self.index = first_internal
         max_index = max(0, len(self.reader.image_names) - 1)
         self.page_slider.setMaximum(max_index)
         self.fullscreen_slider.setMaximum(max_index)
@@ -1691,13 +1774,51 @@ class ImageViewer(QMainWindow):
     # ---- ナビゲーション（戻る/進む/上へ、履歴管理） ----
     def navigate_to_archive(self, path, push=True, start_at_end=False):
         """アーカイブを開き、画像表示に切り替える。履歴にも記録する。"""
-        self.open_archive(path, start_at_end=start_at_end)
-        self.current_folder_path = str(Path(path).resolve().parent)
+        requested_path = str(Path(path).resolve())
+        requested = Path(requested_path)
+        start_name = None
+        if requested.is_file() and requested.suffix.lower() in IMAGE_EXTENSIONS:
+            # 一覧の画像タイルは「1枚だけを開く」のではなく、その画像がある
+            # フォルダをひとまとまりとして開き、選択画像を開始ページにする。
+            start_name = requested.name
+            path = str(requested.parent)
+        else:
+            path = self._descend_to_first_image_folder(requested_path)
+        self.open_archive(path, start_at_end=start_at_end, start_name=start_name)
+        opened = Path(path).resolve()
+        self.current_folder_path = str(opened if opened.is_dir() else opened.parent)
         self.stacked.setCurrentIndex(0)
         if push:
-            self._push_history({"type": "archive", "path": path})
+            self._push_history({"type": "archive", "path": requested_path})
         self._update_nav_buttons()
         self._update_path_label()
+
+    def _descend_to_first_image_folder(self, path):
+        """画像のない通常フォルダでは、自然順の先頭サブフォルダへ自動で降りる。"""
+        current = Path(path).resolve()
+        if not current.is_dir():
+            return str(current)
+
+        visited = set()
+        while current not in visited:
+            visited.add(current)
+            try:
+                entries = list(current.iterdir())
+            except OSError:
+                break
+            if any(p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS for p in entries):
+                break
+            children = sorted(
+                (p for p in entries if p.is_dir()),
+                key=lambda p: natural_sort_key(p.name),
+            )
+            if not children:
+                break
+            next_folder = children[0]
+            debug_print(f"[FOLDER] 直下に画像がないため先頭フォルダへ移動: "
+                        f"{current} -> {next_folder}")
+            current = next_folder
+        return str(current)
 
     def navigate_to_folder(self, path, push=True):
         """フォルダ一覧表示に切り替える。履歴にも記録する。
@@ -1835,6 +1956,7 @@ class ImageViewer(QMainWindow):
     def show_current_image(self):
         if self.reader is None or not self.reader.image_names:
             return
+        self._sync_ai_scope_to_current_page()
         self._prune_ai_work_for_relevance()  # 不要になったAIジョブをキャンセル/削除する
         self._evict_passed_pages()  # 通り過ぎたページのキャッシュを解放する
         self.page_slider.setValue(self.index)
@@ -1904,6 +2026,26 @@ class ImageViewer(QMainWindow):
     # ---- 先読み(プリフェッチ) ----
     MAX_CONCURRENT_PREFETCH_THREADS = 4  # 同時に走らせる先読みスレッドの上限
 
+    def _log_runtime_settings(self, reason):
+        """性能やメモリ使用量に関係する実効設定を診断ログへ記録する。"""
+        debug_print("[CONFIG] " + json.dumps({
+            "reason": reason,
+            "decoded_cache_policy": "whole_archive",
+            "prefetch_threads": self.MAX_CONCURRENT_PREFETCH_THREADS,
+            "prefetch_window_for_sibling_archives": self._prefetch_window,
+            "ai_enabled": self.ai_upscale_enabled,
+            "ai_engine": self.ai_upscale_engine,
+            "ai_model": self.ai_upscale_model,
+            "ai_prefetch_depth": self.ai_prefetch_depth,
+            "ai_queue_limit": self.MAX_AI_QUEUED,
+            "ai_batch_enabled": self.ai_batch_processing_enabled,
+            "ai_batch_min_size": self.ai_batch_min_size,
+            "ai_batch_max_size": self.MAX_AI_BATCH,
+            "passed_pages_keep_count": self.passed_pages_keep_count,
+            "skip_low_res_enabled": self.skip_low_res_enabled,
+            "skip_low_res_threshold": self.skip_low_res_threshold,
+        }, ensure_ascii=False, sort_keys=True))
+
     def _schedule_prefetch(self):
         """アーカイブ全体を、現在位置に近いページから優先して先読みする
         （「ZIP内の画像を全てVRAMに展開しておく」という方針のため、
@@ -1920,10 +2062,8 @@ class ImageViewer(QMainWindow):
             pass  # 同時実行数の上限に達している間は新規開始しない(次の完了時に再度呼ばれる)
         else:
             # 現在位置に近い順(次を優先、その後前)に、全ページを対象にする。
-            # ただし後方(通り過ぎた)方向は passed_pages_keep_count までに制限する
-            # (それ以上は_evict_passed_pagesで解放される想定なので、際限なく
-            # 先読み→即解放を繰り返す無駄なループを避ける)。
-            backward_limit = self.passed_pages_keep_count if self.passed_pages_keep_count >= 0 else total
+            # 生画像はアーカイブ全体をメモリへ置くため、開始位置より前も含める。
+            backward_limit = total
             offsets = []
             for d in range(1, total + 1):
                 if self.index + d < total:
@@ -2111,15 +2251,9 @@ class ImageViewer(QMainWindow):
         source = canvas
         source_desc = "canvas"
 
-        if self.debug_show_diff_highlight:
-            highlighted = self._render_diff_highlight_image()
-            if highlighted is not None:
-                source = QPixmap.fromImage(highlighted)
-                source_desc = "diff_highlight"
-
         is_low_res = (self.skip_low_res_enabled and
                       (canvas.width() < self.skip_low_res_threshold or canvas.height() < self.skip_low_res_threshold))
-        if (source_desc != "diff_highlight" and self.ai_upscale_enabled
+        if (self.ai_upscale_enabled
                 and not self.debug_show_pre_ai and not is_low_res):
             cached = self._ai_cache.get(self.index)
             if cached is not None and cached[0] == (self.rotation, self.aspect_mode):
@@ -2134,22 +2268,7 @@ class ImageViewer(QMainWindow):
                 plan = self._resolve_ai_plan(canvas, target_w, target_h, noise_level, is_enlarging)
                 if plan is not None:
                     model_name, passes = plan
-                    diff_plan = self._try_diff_based_plan(canvas, self.index, self.original_pixmap.toImage(), model_name)
-                    if diff_plan is not None:
-                        crop = diff_plan["cropped_canvas"]
-                        queued = self._request_ai_upscale(crop, cache_key, diff_plan["passes"], model_name)
-                        if queued:
-                            # 実際に新しくジョブを起動した場合のみメタデータを登録する。
-                            # 既に同じcache_keyのジョブが実行中/待機中で今回は何もしなかった
-                            # 場合にここで上書きすると、後で古いジョブの結果が完了した時に
-                            # 「新しいが無関係なbase_pixmap/region_scaled」で合成してしまう
-                            # (前後のページ移動でこのページに戻ってきた時に起きるバグの原因だった)。
-                            self._pending_diff_composite[cache_key] = diff_plan
-                            debug_print(f"[DIFF DISPATCH] page{self.index}(表示中): canvas={canvas.width()}x{canvas.height()} "
-                                        f"crop={crop.width()}x{crop.height()} region_scaled={diff_plan['region_scaled']} "
-                                        f"passes={diff_plan['passes']} -> AI送信サイズ={crop.width()}x{crop.height()}")
-                    else:
-                        self._request_ai_upscale(canvas, cache_key, passes, model_name)  # 裏で処理、結果は後で反映
+                    self._request_ai_upscale(canvas, cache_key, passes, model_name)
 
         debug_print(f"[RENDER DEBUG] zoom_mode={self.zoom_mode} canvas={canvas.width()}x{canvas.height()} "
               f"target={target_w}x{target_h} source={source_desc} auto_resize_window={self.auto_resize_window}")
@@ -2220,8 +2339,6 @@ class ImageViewer(QMainWindow):
             self.cycle_upscale_mode()
         elif event.key() == Qt.Key_O and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
             self.toggle_debug_pre_ai_view()
-        elif event.key() == Qt.Key_H and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
-            self.toggle_debug_diff_highlight()
         elif event.key() == Qt.Key_E and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
             self.reset_ai_processing()
         else:
@@ -2247,7 +2364,6 @@ class ImageViewer(QMainWindow):
         self._batch_failure_count.clear()
         self._ai_processing_start_time.clear()
         self._ai_job_generation.clear()
-        self._pending_diff_composite.clear()
         QTimer.singleShot(0, self._refresh_ai_prefetch)
 
     def reset_ai_processing(self):
@@ -2255,46 +2371,6 @@ class ImageViewer(QMainWindow):
         self._invalidate_ai_work()
         self._show_osd("AI処理をリセットしました")
         self.render_current_pixmap()
-
-    def toggle_debug_diff_highlight(self):
-        """デバッグ用: hキーで、前ページとの差分検出結果(変化したと判定された
-        領域)を色反転して表示する。差分ベースAI処理がどこを「変化あり」と
-        見なしているかを目視確認するための機能。設定には保存しない。"""
-        self.debug_show_diff_highlight = not self.debug_show_diff_highlight
-        self._show_osd("差分ハイライト表示" if self.debug_show_diff_highlight else "通常表示")
-        self.render_current_pixmap()
-
-    def _render_diff_highlight_image(self):
-        """現在ページと前ページ(canvas同士)の差分を計算し、変化ありと判定された
-        ピクセルの色を反転したQImageを返す。前ページが無い/サイズが違う等で
-        比較できない場合はNoneを返す。"""
-        if self.original_pixmap is None or self.index == 0:
-            return None
-        prev_raw = self._image_cache.get(self.index - 1)
-        if prev_raw is None:
-            return None
-        _, prev_image = prev_raw
-
-        curr_canvas = self._compute_canvas(self.original_pixmap)
-        prev_canvas = self._compute_canvas(QPixmap.fromImage(prev_image))
-        if prev_canvas.size() != curr_canvas.size():
-            return None
-
-        ratio, bbox, mask = self._compute_image_diff(
-            prev_canvas.toImage(), curr_canvas.toImage(), return_mask=True
-        )
-
-        result = curr_canvas.toImage().convertToFormat(QImage.Format_RGB888)
-        bpl = result.bytesPerLine()
-        ptr = result.bits()
-        if hasattr(ptr, "setsize"):
-            ptr.setsize(bpl * result.height())
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape(result.height(), bpl)[:, :result.width() * 3]
-        arr = arr.reshape(result.height(), result.width(), 3)
-        arr[mask] = 255 - arr[mask]  # 変化ありと判定された画素だけ色反転する
-
-        debug_print(f"[DIFF DEBUG] ハイライト表示: 変化率={ratio:.1%} bbox={bbox}")
-        return result
 
     def cycle_denoise_mode(self):
         idx = self.DENOISE_MODE_CYCLE.index(self.ai_denoise_mode)
@@ -2355,16 +2431,86 @@ class ImageViewer(QMainWindow):
         self.render_current_pixmap()
 
     # ---- AIアップスケール ----
-    MAX_AI_PASSES = 2  # 4^2=16倍まで。これ以上はレイテンシが大きくなるため打ち切り、
-                        # 残りはQtでの通常スケーリングに委ねる
+    MAX_AI_PASSES = 1  # 現在ディレクトリ全体をまず1パスで処理する。
+                       # 追加拡大はQtでの通常スケーリングに委ねる。
     MAX_AI_QUEUED = 32
     MAX_AI_BATCH = 8
+
+    def _folder_scope_for_index(self, index):
+        if self.reader is None:
+            return None
+        folder_map = getattr(self.reader, "image_folder_index", None)
+        folders = getattr(self.reader, "internal_folders", None)
+        if not isinstance(folder_map, list) or not isinstance(folders, list):
+            return None
+        if not (0 <= index < len(folder_map)):
+            return None
+        folder_number = folder_map[index]
+        if folder_number is None:
+            return None
+        return folders[folder_number]
+
+    def _index_in_ai_scope(self, index):
+        if self.reader is None:
+            return False
+        # テスト用readerや、表示前に直接先読み更新が走った場合にも安全に初期化する。
+        if not self._ai_scope_initialized:
+            self._ai_scope_folder = self._folder_scope_for_index(self.index)
+            self._ai_scope_initialized = True
+        return self._folder_scope_for_index(index) == self._ai_scope_folder
+
+    def _sync_ai_scope_to_current_page(self):
+        """表示ページのディレクトリだけをAI処理対象にする。
+
+        生画像キャッシュはアーカイブ全体について保持する一方、別ディレクトリの
+        AI結果・待機ジョブ・実行中ジョブは破棄し、巨大なAI画像のメモリを解放する。
+        """
+        if self.reader is None or not self.reader.image_names:
+            return
+        new_scope = self._folder_scope_for_index(self.index)
+        if self._ai_scope_initialized and new_scope == self._ai_scope_folder:
+            return
+
+        old_scope = self._ai_scope_folder if self._ai_scope_initialized else "<未設定>"
+        self._ai_scope_initialized = True
+        self._ai_scope_folder = new_scope
+        self._archive_generation += 1
+        for entry in (self._ai_thread_ref, self._batch_thread_ref):
+            if entry is not None:
+                entry[1].request_cancel()
+        released = len(self._ai_cache)
+        self._ai_cache.clear()
+        self._ai_queue.clear()
+        self._ai_failed_keys.clear()
+        self._batch_pending_keys.clear()
+        self._batch_pending_entries = []
+        self._batch_failure_count.clear()
+        self._ai_processing_start_time.clear()
+        self._ai_job_generation.clear()
+        debug_print(f"[AI SCOPE] {old_scope!r} -> {new_scope!r}; "
+                    f"別ディレクトリのAI結果{released}件を解放")
+
+    def _sort_ai_queue_by_view_order(self):
+        """現在ページから先を表示順に並べ、通過済みページは最後へ回す。"""
+        current_index = self.index
+
+        def priority(entry):
+            page_index = entry[1][0]
+            if page_index >= current_index:
+                return (0, page_index - current_index)
+            return (1, current_index - page_index)
+
+        self._ai_queue.sort(key=priority)
 
     def _refresh_ai_prefetch(self):
         """Reconsider decoded pages after navigation, reset and worker completion."""
         if self._closing or not self.ai_upscale_enabled or self.reader is None:
             return
-        for index in sorted(self._image_cache, key=lambda i: (abs(i - self.index), i < self.index)):
+        for index in sorted(
+                self._image_cache,
+                key=lambda i: (0, i - self.index) if i >= self.index else (1, self.index - i)):
+            if not self._index_in_ai_scope(index):
+                continue
             if len(self._ai_queue) >= self.MAX_AI_QUEUED:
                 break
             self._maybe_prefetch_ai(index, self._image_cache[index][1])
@@ -2375,6 +2521,8 @@ class ImageViewer(QMainWindow):
         ページ以内、かつAIをかける価値がある場合のみ。ai_prefetch_depth=-1なら
         アーカイブ全体を対象にする(距離チェックを行わない)。"""
         if not self.ai_upscale_enabled or self.ai_prefetch_depth == 0:
+            return
+        if not self._index_in_ai_scope(index):
             return
         cache_key = (index, self.rotation, self.aspect_mode)
         if (cache_key in self._ai_failed_keys or cache_key == self._ai_pending_key
@@ -2418,17 +2566,7 @@ class ImageViewer(QMainWindow):
         model_name, passes = plan
 
         cache_key = (index, self.rotation, self.aspect_mode)
-        diff_plan = self._try_diff_based_plan(canvas, index, image, model_name)
-        if diff_plan is not None:
-            crop = diff_plan["cropped_canvas"]
-            queued = self._request_ai_upscale(crop, cache_key, diff_plan["passes"], model_name)
-            if queued:
-                self._pending_diff_composite[cache_key] = diff_plan
-                debug_print(f"[DIFF DISPATCH] page{index}(先読み): canvas={canvas.width()}x{canvas.height()} "
-                            f"crop={crop.width()}x{crop.height()} region_scaled={diff_plan['region_scaled']} "
-                            f"passes={diff_plan['passes']} -> AI送信サイズ={crop.width()}x{crop.height()}")
-        else:
-            self._request_ai_upscale(canvas, cache_key, passes, model_name)
+        self._request_ai_upscale(canvas, cache_key, passes, model_name)
 
     def _get_effective_denoise_flag(self, noise_level):
         """デノイズ設定(off/on/auto)と実際のノイズレベルから、デノイズを
@@ -2452,155 +2590,6 @@ class ImageViewer(QMainWindow):
             return base_model
         variants = engine_info.get("denoise_variants", {})
         return variants.get(base_model, base_model)
-
-    # ---- 差分ベースAI高速化 ----
-    # 前ページと現在ページがよく似ている(差分CG等)場合、前ページの既にAI処理済みの
-    # 結果を土台にして、変化した領域だけAI処理することで高速化する。
-    # 違いすぎる場合は通常の全体処理にフォールバックする。
-    DIFF_PIXEL_THRESHOLD = 24     # このRGB差分強度(0-765)を超えたピクセルを「変化した」と見なす
-    DIFF_TOO_DIFFERENT_RATIO = 0.35  # 変化ピクセルの割合がこれを超えたら「別画像」として全体処理にフォールバック
-    DIFF_REGION_PADDING = 24      # 変化領域の周囲に付ける余白(AIにコンテキストを持たせるため)
-    DIFF_MIN_BBOX_DENSITY = 0.5   # バウンディングボックス内で実際に変化したピクセルの割合。これを下回ると
-                                  # 「変化点が広範囲に散らばっている(=実質的に別の画像)」と判断しフォールバックする
-                                  # (背景色が偶然似ている無関係な2枚を、差分CGと誤判定するバグの対策)
-
-    def _compute_image_diff(self, img_a, img_b, return_mask=False):
-        """2枚の画像(同サイズ前提)のピクセル差分を計算する。
-        戻り値: (変化ピクセルの割合, 変化領域のバウンディングボックス(x0,y0,x1,y1))。
-        完全に同一なら bbox は None。
-        return_mask=Trueの場合、3つ目の戻り値として変化マスク(numpy bool配列、
-        h x w)も返す(デバッグ用の色反転表示等に使う)。"""
-        a = img_a.convertToFormat(QImage.Format_RGB888)
-        b = img_b.convertToFormat(QImage.Format_RGB888)
-        w, h = a.width(), a.height()
-
-        def to_array(img):
-            bpl = img.bytesPerLine()
-            ptr = img.constBits()
-            if hasattr(ptr, "setsize"):
-                ptr.setsize(bpl * h)
-            return np.frombuffer(bytes(ptr), dtype=np.uint8).reshape(h, bpl)[:, :w * 3].reshape(h, w, 3)
-
-        arr_a = to_array(a).astype(np.int16)
-        arr_b = to_array(b).astype(np.int16)
-        diff = np.abs(arr_a - arr_b).sum(axis=2)
-        changed_mask = diff > self.DIFF_PIXEL_THRESHOLD
-
-        total = w * h
-        changed_count = int(changed_mask.sum())
-        ratio = changed_count / total if total > 0 else 0.0
-
-        if changed_count == 0:
-            return (ratio, None, changed_mask) if return_mask else (ratio, None)
-
-        ys, xs = np.where(changed_mask)
-        bbox = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
-        return (ratio, bbox, changed_mask) if return_mask else (ratio, bbox)
-
-    def _try_diff_based_plan(self, canvas, index, curr_image, model_name):
-        """直前ページ(index-1)を土台にした差分ベース処理の計画を作る。
-        curr_image: indexページの元画像(QImage)。呼び出し側から明示的に渡す
-        (self.original_pixmapに依存すると、現在表示中でない先読み対象ページを
-        処理する際に不整合が起きるため)。
-        model_name: 今回使う予定のモデル名(クロップに必要なパス数の逆算に使う)。
-        適用できない/割に合わない場合はNoneを返す(呼び出し側は通常の全体処理を行う)。"""
-        if not self.ai_diff_based_enabled:
-            return None
-
-        prev_index = index - 1
-        prev_raw = self._image_cache.get(prev_index)
-        prev_ai = self._ai_cache.get(prev_index)
-        if prev_raw is None or prev_ai is None:
-            return None  # 前ページの生画像/AI結果がまだ無い
-
-        (prev_rotation, prev_aspect), prev_upscaled = prev_ai
-        if (prev_rotation, prev_aspect) != (self.rotation, self.aspect_mode):
-            return None  # 回転/アスペクト比が違うと座標がズレるので対象外
-
-        _, prev_image = prev_raw
-        if curr_image is None:
-            return None
-
-        prev_canvas = self._compute_canvas(QPixmap.fromImage(prev_image))
-        if prev_canvas.size() != canvas.size():
-            return None  # サイズが違う画像は単純比較できない
-
-        curr_canvas_image = canvas.toImage()
-        prev_canvas_image = prev_canvas.toImage()
-        ratio, bbox = self._compute_image_diff(prev_canvas_image, curr_canvas_image)
-
-        if bbox is None:
-            return None  # 完全に同一(差分なし) -> 通常経路にお任せする
-        if ratio > self.DIFF_TOO_DIFFERENT_RATIO:
-            return None  # 違いすぎるので通常の全体処理にフォールバック
-
-        # bbox内での変化密度をチェックする(パディング前の生のbboxで計算する)。
-        # 密度が低い場合、変化点が画面全体に散らばっている(=偶然背景色が似ている
-        # だけの、実質無関係な別画像)と判断し、diff処理を諦めて全体処理に任せる。
-        raw_bbox_w = bbox[2] - bbox[0]
-        raw_bbox_h = bbox[3] - bbox[1]
-        raw_bbox_area = raw_bbox_w * raw_bbox_h
-        total_pixels = canvas.width() * canvas.height()
-        if raw_bbox_area > 0:
-            changed_count = ratio * total_pixels
-            bbox_density = changed_count / raw_bbox_area
-            if bbox_density < self.DIFF_MIN_BBOX_DENSITY:
-                debug_print(f"[DIFF DEBUG] page{index}: bbox密度不足({bbox_density:.1%})のため"
-                            f"全体処理にフォールバック(変化点が広範囲に散らばっている)")
-                return None
-
-        x0, y0, x1, y1 = bbox
-        x0 = max(0, x0 - self.DIFF_REGION_PADDING)
-        y0 = max(0, y0 - self.DIFF_REGION_PADDING)
-        x1 = min(canvas.width(), x1 + self.DIFF_REGION_PADDING)
-        y1 = min(canvas.height(), y1 + self.DIFF_REGION_PADDING)
-        crop_w, crop_h = x1 - x0, y1 - y0
-        if crop_w <= 0 or crop_h <= 0:
-            return None
-
-        scale_x = prev_upscaled.width() / canvas.width()
-        scale_y = prev_upscaled.height() / canvas.height()
-        region_scaled = (
-            round(x0 * scale_x), round(y0 * scale_y),
-            round(crop_w * scale_x), round(crop_h * scale_y),
-        )
-
-        # 前ページが何パス重ねがけして今の拡大率になったのかを逆算し、クロップ側も
-        # 同じパス数で処理する(常に1回だけで処理すると、前ページが2回以上の
-        # 重ねがけだった場合にクロップ部分だけ拡大率が足りず、合成時に引き伸ばされて
-        # ボケてしまうバグがあった)。
-        model_info = get_model_info(self.ai_upscale_engine, model_name)
-        native_scale = model_info["scale"] if model_info else 1
-        effective_scale = max(scale_x, scale_y)
-        passes_needed = self._compute_ai_passes(effective_scale, native_scale) if native_scale > 1 else 1
-
-        cropped_canvas = canvas.copy(x0, y0, crop_w, crop_h)
-        debug_print(f"[DIFF DEBUG] page{index}: 変化率={ratio:.1%} crop={crop_w}x{crop_h} "
-                    f"(元画像{canvas.width()}x{canvas.height()}の一部) region_scaled={region_scaled} "
-                    f"passes={passes_needed}")
-
-        return {
-            "cropped_canvas": cropped_canvas,
-            "base_image": prev_upscaled,
-            "region_scaled": region_scaled,
-            "passes": passes_needed,
-        }
-
-    def _composite_diff_result(self, base_image, region_scaled, upscaled_crop):
-        """前ページの土台(base_image)をコピーし、AI処理済みの差分クロップを
-        正しい位置に貼り付けて、現在ページの完成形を作る。
-        引数・戻り値は共にQImage(メインメモリ上の生データ)。合成処理そのものは
-        QPainterがQPixmap上でしか描画できないため、内部で一時的にQPixmap化するが、
-        そのQPixmapは合成が終わり次第すぐ手放す(戻り値としてキャッシュに長期間
-        居座らせるのはQImageの方にする、VRAM圧迫を避けるため)。"""
-        result_pixmap = QPixmap.fromImage(base_image)
-        painter = QPainter(result_pixmap)
-        x, y, w, h = region_scaled
-        if upscaled_crop.width() != w or upscaled_crop.height() != h:
-            upscaled_crop = upscaled_crop.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        painter.drawImage(x, y, upscaled_crop)
-        painter.end()
-        return result_pixmap.toImage()
 
     def _resolve_ai_plan(self, canvas, target_w, target_h, noise_level, is_enlarging):
         """現在のデノイズ/アップスケール設定から、実際に使うモデル名とパス数を決める。
@@ -2661,7 +2650,7 @@ class ImageViewer(QMainWindow):
         else:  # "target"(既定)
             passes = target_passes
 
-        return (resolved_model, passes)
+        return (resolved_model, min(self.MAX_AI_PASSES, passes))
 
     def _compute_ai_target_factor(self, canvas, auto_target_w, auto_target_h):
         """AI処理でどこまで拡大すべきかの倍率を決める。
@@ -2712,6 +2701,8 @@ class ImageViewer(QMainWindow):
         （既に実行中の古いジョブが、後から書き換わったメタデータで誤って合成されるバグの原因になる）。"""
         if self._closing or not self.ai_upscale_enabled or cache_key in self._ai_failed_keys:
             return False
+        if not self._index_in_ai_scope(cache_key[0]):
+            return False
         if not is_engine_available(self.ai_upscale_engine):
             self.last_ai_error = f"AIエンジンを利用できません: {self.ai_upscale_engine}"
             debug_print(f"[AI QUEUE] skipped {cache_key}: {self.last_ai_error}")
@@ -2729,14 +2720,8 @@ class ImageViewer(QMainWindow):
         image_copy = canvas_pixmap.toImage()  # スレッド間で渡すのでQImageにする
         entry = (image_copy, cache_key, passes, model_name)
 
-        if cache_key[0] == self.index:
-            self._ai_queue.insert(0, entry)  # 現在ページを最優先
-        elif cache_key[0] == self.index + 1:
-            # 次ページは、現在ページの直後(現在ページが並んでいなければ先頭)に優先的に入れる
-            insert_pos = 1 if self._ai_queue and self._ai_queue[0][1][0] == self.index else 0
-            self._ai_queue.insert(insert_pos, entry)
-        else:
-            self._ai_queue.append(entry)  # それ以外の先読み分は後回し
+        self._ai_queue.append(entry)
+        self._sort_ai_queue_by_view_order()
 
         self._ai_processing_start_time[cache_key] = time.time()
         self._ai_job_generation[cache_key] = self._archive_generation
@@ -2760,6 +2745,9 @@ class ImageViewer(QMainWindow):
             elif self.auto_resize_window:
                 QTimer.singleShot(0, self._resize_window_to_image)
             return
+
+        # デコード完了や失敗後の再投入順には依存せず、必ず実際の表示順で処理する。
+        self._sort_ai_queue_by_view_order()
 
         front_index = self._ai_queue[0][1][0]
         is_priority = front_index in (self.index, self.index + 1)
@@ -2911,16 +2899,8 @@ class ImageViewer(QMainWindow):
         elapsed = self._pop_ai_processing_elapsed(cache_key)
         if self._is_ai_result_stale(cache_key):
             debug_print(f"[AI BATCH DEBUG] page{index}: 別アーカイブに切り替わった後の古い結果のため破棄します")
-            self._pending_diff_composite.pop(cache_key, None)
             return
-        diff_plan = self._pending_diff_composite.pop(cache_key, None)
-        if diff_plan is not None:
-            composited = self._composite_diff_result(
-                diff_plan["base_image"], diff_plan["region_scaled"], image
-            )
-            self._ai_cache[index] = ((rotation, aspect_mode), composited)
-        else:
-            self._ai_cache[index] = ((rotation, aspect_mode), image)
+        self._ai_cache[index] = ((rotation, aspect_mode), image)
         self._evict_distant_ai_cache_entries()
         if index == self.index and rotation == self.rotation and aspect_mode == self.aspect_mode:
             self._last_ai_processing_seconds = elapsed
@@ -2986,6 +2966,10 @@ class ImageViewer(QMainWindow):
         実行中のジョブが現在ページ/次ページのどちらでもない場合は、先読み設定に
         関わらず常にキャンセルする(実際に見ているページを最優先するため)。"""
         previous_keys = {entry[1] for entry in self._ai_queue}
+        self._ai_queue = [
+            entry for entry in self._ai_queue
+            if self._index_in_ai_scope(entry[1][0])
+        ]
         if self._ai_pending_key is not None:
             pending_index = self._ai_pending_key[0]
             if pending_index not in (self.index, self.index + 1):
@@ -2999,10 +2983,7 @@ class ImageViewer(QMainWindow):
         # (現在ページが既に処理済みなら、わざわざ背景バッチの進行を無駄にする
         # 必要は無いので、そのまま継続させる。)
         if self._batch_thread_ref is not None:
-            current_cached = self._ai_cache.get(self.index)
-            current_needs_ai = not (
-                current_cached is not None and current_cached[0] == (self.rotation, self.aspect_mode)
-            )
+            current_needs_ai = self._current_page_requires_ai()
             if current_needs_ai:
                 _, batch_worker = self._batch_thread_ref
                 batch_worker.request_cancel()
@@ -3023,7 +3004,7 @@ class ImageViewer(QMainWindow):
             # 近い順にしておく(そうしないと、駆け足で通り過ぎた直後に停止した時、
             # 停止位置からの続きより先に、既に通り過ぎた古い項目が処理されて
             # しまい、「止まった場所から先に進んでいく」という期待に反する)。
-            self._ai_queue.sort(key=lambda entry: abs(entry[1][0] - self.index))
+            self._sort_ai_queue_by_view_order()
             self._discard_pruned_ai_metadata(previous_keys)
             return
 
@@ -3034,45 +3015,45 @@ class ImageViewer(QMainWindow):
             entry for entry in self._ai_queue
             if relevant_min <= entry[1][0] <= relevant_max
         ]
-        self._ai_queue.sort(key=lambda entry: abs(entry[1][0] - self.index))
+        self._sort_ai_queue_by_view_order()
         self._discard_pruned_ai_metadata(previous_keys)
+
+    def _current_page_requires_ai(self):
+        """現在ページが本当にAI処理待ちかを返す。
+
+        低解像度スキップ対象を「AIキャッシュがない」という理由だけで未処理扱い
+        すると、ページ送りのたびに有効な先行バッチをキャンセルしてしまう。
+        """
+        current_cached = self._ai_cache.get(self.index)
+        if current_cached is not None and current_cached[0] == (self.rotation, self.aspect_mode):
+            return False
+        if self.skip_low_res_enabled:
+            raw_entry = self._image_cache.get(self.index)
+            if raw_entry is not None:
+                image = raw_entry[1]
+                if (image.width() < self.skip_low_res_threshold
+                        or image.height() < self.skip_low_res_threshold):
+                    return False
+        return True
 
     def _discard_pruned_ai_metadata(self, previous_keys):
         removed = previous_keys - {entry[1] for entry in self._ai_queue}
         for key in removed:
-            self._pending_diff_composite.pop(key, None)
             self._ai_processing_start_time.pop(key, None)
             self._ai_job_generation.pop(key, None)
 
     def _evict_passed_pages(self):
-        """現在位置より後ろ(既に通り過ぎた)のページを、passed_pages_keep_countより
-        多く保持している場合、古い方から_image_cache/_ai_cacheを解放する。
-        前方(まだ見ていない)のページは対象外(そちらは「メモリが潤沢な前提で
-        全ページキャッシュしておく」という方針を維持する)。"""
-        keep_count = self.passed_pages_keep_count
-        if keep_count < 0:
-            return  # 負の値なら無制限(解放しない)
+        """生画像は開いているアーカイブ/フォルダ全体について保持する。
 
-        cutoff = self.index - keep_count  # これより小さいindexは解放対象
-        evicted_raw = 0
-        evicted_ai = 0
-        for idx in list(self._image_cache.keys()):
-            if idx < cutoff:
-                del self._image_cache[idx]
-                evicted_raw += 1
-        for idx in list(self._ai_cache.keys()):
-            if idx < cutoff:
-                del self._ai_cache[idx]
-                evicted_ai += 1
-
-        if evicted_raw or evicted_ai:
-            debug_print(f"[MEMORY] 通り過ぎたページを解放: 生画像={evicted_raw}件 AI結果={evicted_ai}件 "
-                        f"(index={self.index}, cutoff={cutoff})")
+        AI画像はページ位置ではなく、_sync_ai_scope_to_current_page()が
+        ディレクトリ境界でまとめて解放する。
+        """
+        return
 
     def _on_ai_upscale_pass_finished(self, cache_key, image, current_pass, total_passes):
         """多段(重ねがけ)AI処理の、1段完了ごとの中間結果。現在ページ宛なら
         その時点の品質ですぐ表示を更新する(全パス完了を待たない)。
-        差分ベース処理中の場合は、クロップ結果を土台に合成してから保存する。"""
+        完了した中間結果を表示用キャッシュへ保存する。"""
         if self._ai_sender_is_stale():
             return
         index, rotation, aspect_mode = cache_key
@@ -3081,14 +3062,7 @@ class ImageViewer(QMainWindow):
             # 来るので、ここではまだ世代情報を消費しない(読み取りのみ)。
             debug_print(f"[AI DEBUG] page{index}: 別アーカイブに切り替わった後の古い中間結果のため破棄します")
             return
-        diff_plan = self._pending_diff_composite.get(cache_key)
-        if diff_plan is not None:
-            composited = self._composite_diff_result(
-                diff_plan["base_image"], diff_plan["region_scaled"], image
-            )
-            self._ai_cache[index] = ((rotation, aspect_mode), composited)
-        else:
-            self._ai_cache[index] = ((rotation, aspect_mode), image)
+        self._ai_cache[index] = ((rotation, aspect_mode), image)
         if index == self.index and rotation == self.rotation and aspect_mode == self.aspect_mode:
             self.render_current_pixmap()
         if total_passes > 1 and not self.isFullScreen():
@@ -3104,7 +3078,6 @@ class ImageViewer(QMainWindow):
         debug_print(f"[AI DEBUG] page{cache_key[0]}: AI処理がキャンセルされました")
         self._ai_pending_key = None
         self._ai_job_generation.pop(cache_key, None)
-        self._pending_diff_composite.pop(cache_key, None)
         if not self.isFullScreen() and cache_key == (self.index, self.rotation, self.aspect_mode):
             self.statusBar().clearMessage()
         self._process_ai_queue()
@@ -3117,21 +3090,9 @@ class ImageViewer(QMainWindow):
         elapsed = self._pop_ai_processing_elapsed(cache_key)
         if self._is_ai_result_stale(cache_key):
             debug_print(f"[AI DEBUG] page{index}: 別アーカイブに切り替わった後の古い結果のため破棄します")
-            self._pending_diff_composite.pop(cache_key, None)
             self._process_ai_queue()
             return
-        diff_plan = self._pending_diff_composite.pop(cache_key, None)
-        if diff_plan is not None:
-            debug_print(f"[DIFF DISPATCH] page{index}: AIから返ってきた画像サイズ={image.width()}x{image.height()} "
-                        f"(期待していたクロップサイズ={diff_plan['cropped_canvas'].width()}x{diff_plan['cropped_canvas'].height()}, "
-                        f"土台サイズ={diff_plan['base_image'].width()}x{diff_plan['base_image'].height()}, "
-                        f"region_scaled={diff_plan['region_scaled']})")
-            composited = self._composite_diff_result(
-                diff_plan["base_image"], diff_plan["region_scaled"], image
-            )
-            self._ai_cache[index] = ((rotation, aspect_mode), composited)
-        else:
-            self._ai_cache[index] = ((rotation, aspect_mode), image)
+        self._ai_cache[index] = ((rotation, aspect_mode), image)
         self._evict_distant_ai_cache_entries()
         if index == self.index and rotation == self.rotation and aspect_mode == self.aspect_mode:
             if not self.isFullScreen():
@@ -3193,9 +3154,19 @@ class ImageViewer(QMainWindow):
         if self._last_ai_processing_seconds is not None:
             lines.append(f"処理時間: {self._last_ai_processing_seconds:.2f}秒")
 
+        if self.reader is not None:
+            scope_indices = [
+                i for i in range(len(self.reader.image_names))
+                if self._index_in_ai_scope(i)
+            ]
+            processed = sum(1 for i in scope_indices if i in self._ai_cache)
+            scope_label = self._ai_scope_folder or "最上層"
+            lines.append(f"AI処理済み: {processed} / {len(scope_indices)} ({scope_label})")
+
         self.debug_info_label.setText("\n".join(lines))
         self.debug_info_label.adjustSize()
-        self.debug_info_label.move(10, 10)
+        top = self.nav_bar.height() + 10 if self.nav_bar.isVisible() else 28
+        self.debug_info_label.move(10, top)
         self.debug_info_label.raise_()
         self.debug_info_label.show()
 
@@ -3205,7 +3176,6 @@ class ImageViewer(QMainWindow):
         debug_print(f"[AI DEBUG] page{cache_key[0]}: AI処理が失敗しました: {message}")
         self._ai_pending_key = None
         self._ai_job_generation.pop(cache_key, None)
-        self._pending_diff_composite.pop(cache_key, None)
         self._ai_failed_keys.add(cache_key)
         self._pop_ai_processing_elapsed(cache_key)
         cached = self._ai_cache.get(cache_key[0])
@@ -3414,10 +3384,9 @@ class ImageViewer(QMainWindow):
 
     def toggle_fullscreen(self):
         if self.isFullScreen():
-            # 枠なし(FramelessWindowHint)を解除してから通常表示に戻す
-            self.setWindowFlags(self.windowFlags() & ~Qt.FramelessWindowHint)
-            self.showNormal()  # 直前のウィンドウサイズに自然に戻る
-            self.show()
+            self.showNormal()
+            if self._pre_fullscreen_was_maximized:
+                self.showMaximized()
             self.nav_bar.show()
             self.statusBar().show()
             self._fullscreen_slider_check_timer.stop()
@@ -3437,16 +3406,14 @@ class ImageViewer(QMainWindow):
                     target_h = min(target_h, avail.height())
                 self.resize(target_w, target_h)
         else:
-            # 枠なしにしてから全画面化する(タイトルバー・タスクバーを確実に隠す)。
-            # 自前のナビバー・ステータスバーも隠し、画像だけの「本当の全画面」にする。
-            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-            self.showFullScreen()
             self.nav_bar.hide()
             self.statusBar().hide()
+            self._pre_fullscreen_was_maximized = self.isMaximized()
+            self.showFullScreen()
             self._fullscreen_slider_check_timer.start(200)
-        # フルスクリーン切替直後はビューポートサイズが変わるので、
-        # fitモードなら再レンダリングが必要
-        self.render_current_pixmap()
+        # showFullScreen/showNormal直後はビューポートが旧サイズのことがある。
+        # イベントループでレイアウト確定後に描画し、最初の1枚だけ縮むのを防ぐ。
+        QTimer.singleShot(0, self.render_current_pixmap)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3574,11 +3541,6 @@ class ImageViewer(QMainWindow):
         self._update_scrollbar_policy()
         if checked and self.zoom_mode != "fit":
             self._resize_window_to_image()
-
-    def toggle_diff_based_upscale(self, checked):
-        self.ai_diff_based_enabled = checked
-        self.settings["ai_diff_based_enabled"] = checked
-        save_settings(self.settings)
 
     def _update_scrollbar_policy(self):
         """自動ウィンドウリサイズが有効な間は、常にウィンドウが画像サイズに
@@ -3753,12 +3715,6 @@ class ImageViewer(QMainWindow):
         action_auto_resize.setChecked(self.auto_resize_window)
         action_auto_resize.toggled.connect(self.toggle_auto_resize_window)
         view_menu.addAction(action_auto_resize)
-
-        action_diff_based = QAction("AI差分ベース高速化", self)
-        action_diff_based.setCheckable(True)
-        action_diff_based.setChecked(self.ai_diff_based_enabled)
-        action_diff_based.toggled.connect(self.toggle_diff_based_upscale)
-        view_menu.addAction(action_diff_based)
 
         view_menu.addSeparator()
         action_properties = QAction("プロパティ", self)
@@ -4125,7 +4081,7 @@ class ImageViewer(QMainWindow):
             ai_layout.addRow("アップスケール:", ai_upscale_mode_combo)
 
             ai_fixed_count_spin = QSpinBox()
-            ai_fixed_count_spin.setRange(1, 4)
+            ai_fixed_count_spin.setRange(1, 1)
             ai_fixed_count_spin.setValue(self.ai_upscale_fixed_count)
             ai_fixed_count_spin.setEnabled(self.ai_upscale_mode == "count")
             ai_upscale_mode_combo.currentIndexChanged.connect(
@@ -4195,18 +4151,6 @@ class ImageViewer(QMainWindow):
             mode_key_note = QLabel("表示中に D キーでデノイズ、U キーでアップスケールの方式を切り替えられます。")
             mode_key_note.setStyleSheet("color: #888; font-size: 11px;")
             ai_layout.addRow(mode_key_note)
-
-            ai_diff_checkbox = QCheckBox("差分ベース高速化(前ページと似ている場合、変化部分だけAI処理する)")
-            ai_diff_checkbox.setChecked(self.ai_diff_based_enabled)
-            ai_layout.addRow(ai_diff_checkbox)
-
-            diff_note = QLabel(
-                "差分CG(立ち絵の表情差分等)のような、前ページとほぼ同じ画像が\n"
-                "続く場合に有効です。前後で全く違う画像(通常のページ送り)では\n"
-                "自動的に通常処理にフォールバックします。"
-            )
-            diff_note.setStyleSheet("color: #888; font-size: 11px;")
-            ai_layout.addRow(diff_note)
 
             skip_low_res_checkbox = QCheckBox("低解像度の画像はAI処理を飛ばす")
             skip_low_res_checkbox.setChecked(self.skip_low_res_enabled)
@@ -4449,9 +4393,6 @@ class ImageViewer(QMainWindow):
                 self.ai_prefetch_depth = new_prefetch_depth
                 self.settings["ai_prefetch_depth"] = new_prefetch_depth
 
-                self.ai_diff_based_enabled = ai_diff_checkbox.isChecked()
-                self.settings["ai_diff_based_enabled"] = self.ai_diff_based_enabled
-
                 self.skip_low_res_enabled = skip_low_res_checkbox.isChecked()
                 self.settings["skip_low_res_enabled"] = self.skip_low_res_enabled
                 self.skip_low_res_threshold = skip_low_res_spin.value()
@@ -4472,6 +4413,7 @@ class ImageViewer(QMainWindow):
             self.settings["keybinds"] = new_keybinds
 
             save_settings(self.settings)
+            self._log_runtime_settings("options_saved")
 
             # 既にアーカイブを開いていれば、新しいソート順で開き直す
             if self.current_archive_path:

@@ -2,6 +2,7 @@
 """Run with python -m unittest -v test_regressions (no GPU/model required)."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+import json
 import unittest
 from unittest.mock import Mock, patch
 from pathlib import Path
@@ -61,6 +62,8 @@ class RegressionTests(unittest.TestCase):
         self.v = viewer.ImageViewer()
         self.v.ai_upscale_enabled = True
         self.v.zoom_mode = '200'
+        self.v.skip_low_res_enabled = False
+        self.v.passed_pages_keep_count = 3
         self.v._start_sibling_prefetch = Mock()
         self.image = QImage(32, 32, QImage.Format_RGB32)
         self.image.fill(0xff808080)
@@ -80,6 +83,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_batch_completion_releases_queue(self):
         v = self.v
+        v.reader = Mock(image_names=[0])
         thread, worker = Mock(), Mock()
         worker._generation = v._archive_generation
         worker._cancel_requested = False
@@ -99,8 +103,154 @@ class RegressionTests(unittest.TestCase):
         v._schedule_prefetch()
         self.assertIn(6, [c.args[0] for c in v._maybe_prefetch_ai.call_args_list])
 
+    def test_ncnn_model_path_is_relative_to_ai_working_directory(self):
+        models_dir = Path(r'C:\app\ai_upscale\models-se')
+        command = ai_upscale.build_command(
+            'realcugan', Path(r'C:\app\ai_upscale\realcugan.exe'), models_dir,
+            Path('input.png'), Path('output.png'), 'up2x-no-denoise',
+        )
+
+        self.assertEqual(command[command.index('-m') + 1], 'models-se')
+        self.assertEqual(command[command.index('-n') + 1], '0')
+
+    def test_realcugan_denoise3_uses_matching_noise_level(self):
+        command = ai_upscale.build_command(
+            'realcugan', Path(r'C:\app\ai_upscale\realcugan.exe'),
+            Path(r'C:\app\ai_upscale\models-se'), Path('input.png'),
+            Path('output.png'), 'up2x-denoise3x',
+        )
+
+        self.assertEqual(command[command.index('-n') + 1], '3')
+
+    def test_ai_queue_prioritizes_current_then_future_view_order(self):
+        v = self.v
+        v.index = 5
+        order = [3, 8, 4, 7, 5, 6]
+        v._ai_queue = [
+            (self.image, (index, 0, 'original'), 1, v.ai_upscale_model)
+            for index in order
+        ]
+
+        v._sort_ai_queue_by_view_order()
+
+        self.assertEqual(
+            [entry[1][0] for entry in v._ai_queue],
+            [5, 6, 7, 8, 4, 3],
+        )
+
     def test_missing_generation_is_stale(self):
         self.assertTrue(self.v._is_ai_result_stale((0, 0, 'original')))
+
+    def test_requested_defaults(self):
+        defaults = viewer.DEFAULT_SETTINGS
+        self.assertEqual(defaults['zoom_mode'], 'fit')
+        self.assertTrue(defaults['ai_upscale_enabled'])
+        self.assertEqual(defaults['ai_upscale_engine'], 'realcugan')
+        self.assertEqual(defaults['ai_upscale_model'], 'up2x-no-denoise')
+        self.assertEqual(defaults['ai_prefetch_depth'], -1)
+        self.assertTrue(defaults['skip_low_res_enabled'])
+        self.assertEqual(defaults['skip_low_res_threshold'], 300)
+        self.assertEqual(defaults['passed_pages_keep_count'], -1)
+        self.assertTrue(defaults['ai_batch_processing_enabled'])
+        keybinds = {action_id: key for action_id, _label, key, _handler in viewer.KEYBINDABLE_ACTIONS}
+        self.assertEqual(keybinds['next_page'], 'Left')
+        self.assertEqual(keybinds['prev_page'], 'Right')
+        self.assertEqual(keybinds['prev_folder'], ',')
+        self.assertEqual(keybinds['next_folder'], '.')
+
+    def test_internal_folders_follow_depth_first_natural_order(self):
+        reader = object.__new__(viewer.ArchiveReader)
+        reader.image_names = [
+            'B/page.png',
+            'A/page.png',
+            'A/child10/page.png',
+            'A/child2/deeper/page.png',
+        ]
+
+        reader._detect_internal_folders()
+
+        self.assertEqual(reader.internal_folders, [
+            'A', 'A/child2/deeper', 'A/child10', 'B',
+        ])
+
+    def test_filesystem_folder_recurses_for_internal_folder_navigation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'chapter2').mkdir()
+            (root / 'chapter10' / 'part1').mkdir(parents=True)
+            (root / 'chapter2' / 'page.png').write_bytes(b'image')
+            (root / 'chapter10' / 'part1' / 'page.png').write_bytes(b'image')
+
+            reader = viewer.ArchiveReader(str(root), [], sort_key=viewer.natural_sort_key)
+
+            self.assertEqual(reader.image_names, [
+                'chapter2/page.png', 'chapter10/part1/page.png',
+            ])
+            self.assertEqual(reader.internal_folders, [
+                'chapter2', 'chapter10/part1',
+            ])
+
+    def test_clicking_image_tile_opens_its_folder_at_that_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.image.save(str(root / 'page1.png'))
+            self.image.save(str(root / 'page2.png'))
+
+            self.v.navigate_to_archive(str(root / 'page2.png'))
+
+            self.assertEqual(Path(self.v.reader.path), root)
+            self.assertEqual(self.v.reader.image_names[self.v.index], 'page2.png')
+            self.assertEqual(Path(self.v.current_folder_path), root)
+
+    def test_changing_internal_folder_releases_only_ai_work_not_raw_archive(self):
+        v = self.v
+        v.reader = Mock(
+            image_names=['A/1.png', 'A/2.png', 'B/1.png'],
+            image_folder_index=[0, 0, 1],
+            internal_folders=['A', 'B'],
+        )
+        v._image_cache = {i: (b'raw', self.image) for i in range(3)}
+        v._ai_scope_initialized = True
+        v._ai_scope_folder = 'A'
+        v._ai_cache = {0: ((0, 'original'), self.image), 1: ((0, 'original'), self.image)}
+        v._ai_queue = [(self.image, (1, 0, 'original'), 1, v.ai_upscale_model)]
+        v.index = 2
+
+        v._sync_ai_scope_to_current_page()
+
+        self.assertEqual(v._ai_scope_folder, 'B')
+        self.assertEqual(v._ai_cache, {})
+        self.assertEqual(v._ai_queue, [])
+        self.assertEqual(set(v._image_cache), {0, 1, 2})
+
+    def test_old_settings_are_migrated_to_requested_defaults_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'settings.json'
+            path.write_text(json.dumps({
+                'zoom_mode': '100',
+                'ai_upscale_enabled': False,
+                'keybinds': {'next_page': 'Right', 'prev_page': 'Left'},
+            }), encoding='utf-8')
+            with patch.object(viewer, 'get_settings_path', return_value=path):
+                settings = viewer.load_settings()
+
+            self.assertEqual(settings['settings_version'], 2)
+            self.assertEqual(settings['zoom_mode'], 'fit')
+            self.assertTrue(settings['ai_upscale_enabled'])
+            self.assertNotIn('next_page', settings['keybinds'])
+            self.assertNotIn('prev_page', settings['keybinds'])
+
+    def test_empty_folder_descends_into_first_natural_sorted_image_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'folder10').mkdir()
+            first = root / 'folder2' / 'nested'
+            first.mkdir(parents=True)
+            self.image.save(str(first / 'page.png'))
+
+            resolved = self.v._descend_to_first_image_folder(root)
+
+            self.assertEqual(Path(resolved), first.resolve())
 
     def test_manual_target_works_at_100_percent(self):
         v = self.v
@@ -201,6 +351,21 @@ class RegressionTests(unittest.TestCase):
         v.render_current_pixmap()
         spin_until(lambda: self.idle() and len(v._ai_cache) == 20)
         self.assertIn(10, v._ai_cache)
+
+    def test_low_resolution_current_page_does_not_cancel_future_batch(self):
+        v = self.v
+        v.index = 5
+        v.skip_low_res_enabled = True
+        v.skip_low_res_threshold = 244
+        low_res = QImage(120, 90, QImage.Format_RGB32)
+        v._image_cache[5] = (b'', low_res)
+        worker = Mock()
+        v._batch_thread_ref = (Mock(), worker)
+
+        v._prune_ai_work_for_relevance()
+
+        worker.request_cancel.assert_not_called()
+        v._batch_thread_ref = None
 
     def test_timeout_kills_and_reaps_batch_process(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -386,12 +551,12 @@ for a,b in pairs:
             self.assertEqual(len(failures), 1)
             self.assertIsNotNone(processes[0].poll())
 
-    def test_explicit_pass_modes_work_at_native_display_size(self):
+    def test_all_upscale_modes_are_limited_to_one_pass(self):
         for mode, count in [('on', 1), ('count', 3)]:
             self.v.ai_upscale_mode = mode
             self.v.ai_upscale_fixed_count = count
             plan = self.v._resolve_ai_plan(QPixmap.fromImage(self.image), 32, 32, 0, False)
-            self.assertEqual(plan[1], count)
+            self.assertEqual(plan[1], 1)
 
     def test_old_worker_cannot_erase_new_same_key_metadata(self):
         v = self.v
@@ -416,13 +581,11 @@ for a,b in pairs:
         v = self.v
         key = (0, 0, 'original')
         v._ai_queue = [(self.image, key, 1, v.ai_upscale_model)]
-        v._pending_diff_composite[key] = {'base_image': self.image}
         v._ai_processing_start_time[key] = time.time()
         v._ai_job_generation[key] = v._archive_generation
         v.index = 20
         v._prune_ai_work_for_relevance()
         self.assertFalse(v._ai_queue)
-        self.assertNotIn(key, v._pending_diff_composite)
         self.assertNotIn(key, v._ai_processing_start_time)
         self.assertNotIn(key, v._ai_job_generation)
 

@@ -19,6 +19,8 @@ OpenVINOも使う場合は `python -m pip install -r requirements-openvino.txt` 
 
 AI実行ファイルとモデルはリポジトリに含めません。各配布元のライセンスを確認し、プロジェクト直下の `ai_upscale/` に自分で配置してください。`prepare_ai_folder.bat` を実行すると配置を検査できます。
 
+詳しい配置方法と公式配布物の取得については [AI_SETUP.md](AI_SETUP.md) を参照してください。
+
 対応候補はReal-ESRGAN ncnn Vulkan、Real-CUGAN ncnn Vulkan、waifu2x ncnn Vulkan、OpenVINO対応ONNXモデルです。AIフォルダがなくてもビューア機能は動作します。RARには、別途導入した `unrar` など、rarfileが利用できるコマンドが必要です。
 
 ## Windows実行ファイルのビルド
@@ -29,7 +31,7 @@ AI実行ファイルとモデルはリポジトリに含めません。各配布
 - `build.bat`: GUIフォルダ版
 - `build_final.bat`: GUI単一EXE版
 
-ローカルに `ai_upscale/`、`unrar.exe`、`tlg6_native.dll` がある場合だけビルド出力へコピーします。これらはGit管理対象外です。
+ローカルに `ai_upscale/`、`unrar.exe`、`tlg6_native.dll` がある場合だけビルド出力へコピーします。`ai_upscale/` は直下の実行ファイルと `models/`、`models-se/`、`models-cunet/`、`openvino_models/` のみをコピーし、配布物を展開したまま残っている重複サブフォルダは除外します。これらはGit管理対象外です。
 
 ## テスト
 

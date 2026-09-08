@@ -15,6 +15,10 @@ AIUpscaler固有のソースはApache-2.0で提供します。以下の依存物
 | keyring | Credential storage | MIT |
 | PyInstaller | Windows packaging | GPL-2.0-or-later with a bootloader exception |
 | OpenVINO (optional) | ONNX inference | Apache-2.0 |
+| Real-ESRGAN / Real-ESRGAN ncnn Vulkan (optional download) | AI upscale | BSD-3-Clause / MIT |
+| Real-CUGAN ncnn Vulkan (optional download) | AI upscale | MIT |
+| waifu2x ncnn Vulkan (optional download) | AI upscale | MIT |
+| UnRAR (optional, user-installed) | RAR extraction | RARLAB UnRAR license |
 
 PySide6/Qtをバイナリへ同梱して再配布する場合は、対応するライセンス本文・著作権表示・再リンクに関する条件を満たしてください。PyInstallerのbootloader exceptionも配布形態に応じて確認してください。
 
@@ -31,3 +35,8 @@ Upstream license information:
 - https://github.com/jaraco/keyring/blob/main/LICENSE
 - https://pyinstaller.org/en/stable/license.html
 - https://github.com/openvinotoolkit/openvino/blob/master/LICENSE
+- https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE
+- https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/blob/master/LICENSE
+- https://github.com/nihui/realcugan-ncnn-vulkan/blob/main/LICENSE
+- https://github.com/nihui/waifu2x-ncnn-vulkan/blob/master/LICENSE
+- https://www.rarlab.com/license.htm

@@ -40,11 +40,11 @@ if errorlevel 1 exit /b 1
 
 echo [3/4] Building ArchiveViewer...
 if /I "%BUILD_MODE%"=="final" (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --collect-all openvino --onefile --windowed --name ArchiveViewer viewer.py
 ) else if /I "%BUILD_MODE%"=="debug" (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --console --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --collect-all openvino --onedir --console --name ArchiveViewer viewer.py
 ) else (
-  "%PYEXE%" -m PyInstaller --noconfirm --clean --onedir --windowed --name ArchiveViewer viewer.py
+  "%PYEXE%" -m PyInstaller --noconfirm --clean --collect-all openvino --onedir --windowed --name ArchiveViewer viewer.py
 )
 if errorlevel 1 exit /b 1
 
@@ -56,11 +56,22 @@ if /I "%BUILD_MODE%"=="final" (
 
 echo [4/4] Copying notices and optional local assets...
 for %%F in (LICENSE NOTICE THIRD_PARTY_NOTICES.md) do copy /Y "%%F" "%OUT_DIR%\%%F" >nul
-if exist "ai_upscale\" xcopy /Y /E /I "ai_upscale" "%OUT_DIR%\ai_upscale" >nul
+if exist "ai_upscale\" (
+  if not exist "%OUT_DIR%\ai_upscale\" mkdir "%OUT_DIR%\ai_upscale"
+  for %%F in (
+    realesrgan-ncnn-vulkan.exe
+    realcugan-ncnn-vulkan.exe
+    waifu2x-ncnn-vulkan.exe
+    vcomp140.dll
+  ) do if exist "ai_upscale\%%F" copy /Y "ai_upscale\%%F" "%OUT_DIR%\ai_upscale\%%F" >nul
+  for %%D in (models models-se models-cunet openvino_models) do (
+    if exist "ai_upscale\%%D\" xcopy /Y /E /I "ai_upscale\%%D" "%OUT_DIR%\ai_upscale\%%D" >nul
+  )
+)
 if exist "unrar.exe" copy /Y "unrar.exe" "%OUT_DIR%\unrar.exe" >nul
 if exist "tlg6_native.dll" copy /Y "tlg6_native.dll" "%OUT_DIR%\tlg6_native.dll" >nul
 
 echo.
 echo Build complete: %OUT_DIR%
-echo AI engines, models, UnRAR, and the optional native TLG decoder are not downloaded by this script.
+echo Local AI engines/models, UnRAR, and the native TLG decoder were copied when found.
 pause

@@ -51,7 +51,7 @@ _debug_state = {"enabled": False}
 
 def debug_print(msg):
     if _debug_state["enabled"]:
-        print(msg, flush=True)
+        print(msg)
 
 
 def get_ai_upscale_dir():
@@ -188,8 +188,8 @@ ENGINES = {
     },
 }
 
-DEFAULT_ENGINE = "realesrgan"
-DEFAULT_MODEL = "realesrgan-x4plus-anime"
+DEFAULT_ENGINE = "realcugan"
+DEFAULT_MODEL = "up2x-no-denoise"
 
 
 def is_engine_available(engine_key):
@@ -290,6 +290,10 @@ def build_command(engine_key, exe_path, models_dir, input_path, output_path, mod
             内蔵GPUと外付けGPUが両方ある環境(例: Core Ultra + Arc)で、狙った方を
             確実に使いたい場合に指定する。3エンジンとも共通で-gオプションを持つ。
     """
+    # ncnn系ツールはcwdを基準に-mを解決する実装があり、絶対パスを渡すと
+    # 「cwd + 絶対パス」の二重パスになる。ai_upscale直下のフォルダ名だけを渡す。
+    models_arg = models_dir.name
+
     if engine_key == "realesrgan":
         info = get_model_info(engine_key, model_name)
         cmd = [
@@ -298,19 +302,22 @@ def build_command(engine_key, exe_path, models_dir, input_path, output_path, mod
             "-o", str(output_path),
             "-n", model_name,
             "-s", str(info["scale"]),
-            "-m", str(models_dir),
+            "-m", models_arg,
         ]
     elif engine_key == "realcugan":
         # up{scale}x-{denoise} という名前から、-s と -n を組み立てる
         info = get_model_info(engine_key, model_name)
-        denoise = "3" if "denoise3x" in model_name else "-1"
+        # realcugan-ncnn-vulkanでは -n 0 が "no-denoise"。-1 は
+        # upNx-conservative.param を要求する別モデルであり、配布している
+        # upNx-no-denoise.param とは対応しない。
+        denoise = "3" if "denoise3x" in model_name else "0"
         cmd = [
             str(exe_path),
             "-i", str(input_path),
             "-o", str(output_path),
             "-s", str(info["scale"]),
             "-n", denoise,
-            "-m", str(models_dir),
+            "-m", models_arg,
         ]
     elif engine_key == "waifu2x":
         info = get_model_info(engine_key, model_name)
@@ -326,7 +333,7 @@ def build_command(engine_key, exe_path, models_dir, input_path, output_path, mod
             "-o", str(output_path),
             "-s", str(info["scale"]),
             "-n", noise,
-            "-m", str(models_dir),
+            "-m", models_arg,
         ]
     else:
         raise ValueError(f"未知のエンジン: {engine_key}")
