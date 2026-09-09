@@ -51,3 +51,6 @@ password_list.txt
 .DS_Store
 Thumbs.db
 *.swp
+
+# Rust
+target/

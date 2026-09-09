@@ -1,5 +1,8 @@
 # AIUpscaler
 
+> **Rust移植を開始しました。** 汎用CPU版のソースとビルド方法は
+> [RUST_PORT.md](RUST_PORT.md)を参照してください。現在のPython版も比較用に残しています。
+
 Windows向けの画像・アーカイブビューアです。フォルダ、ZIP、RAR、7z内の画像を表示し、任意に外部AIエンジンで現在画像と後続画像をアップスケールします。GUIはPySide6です。
 
 ## 開発環境
