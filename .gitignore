@@ -54,3 +54,6 @@ Thumbs.db
 
 # Rust
 target/
+.cargo/
+.rustup/
+.build-tools/

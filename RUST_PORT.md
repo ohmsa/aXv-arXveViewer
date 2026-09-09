@@ -26,6 +26,20 @@ build_rust.bat
 
 生成物は`target\release\axv.exe`です。
 
+### Rustを通常インストールしない場合
+
+`build_rust_portable.bat`を実行すると、公式のRustupを取得し、RustとCargoを
+プロジェクト内の`.rustup/`と`.cargo/`へ配置してビルドします。PATHやユーザー領域の
+Rust設定は変更しません。
+
+```powershell
+build_rust_portable.bat
+```
+
+MSVCリンカーとWindows SDKはRustに含まれないため、Visual Studio Build Toolsの
+「C++によるデスクトップ開発」は必要です。一度導入済みなら、Rust本体については
+このバッチだけで準備できます。
+
 ## 次の実装
 
 - 外部RealCUGANのPNG入出力アダプターと処理キュー

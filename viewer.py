@@ -3664,7 +3664,6 @@ class ImageViewer(QMainWindow):
         menu.exec(self.mapToGlobal(pos))
 
     def _show_viewer_context_menu(self, pos):
-        # MPC-HCの右クリックメニューを参考にした構成:
         # 開く / ページ / 拡大縮小 / アスペクト比 / 表示 / オプション / バージョン情報 / 終了
         menu = QMenu(self)
         has_archive = self.reader is not None and bool(self.reader.image_names)
@@ -3677,7 +3676,7 @@ class ImageViewer(QMainWindow):
 
         menu.addSeparator()
 
-        # ---- ページ（MPC-HCの「ナビゲート」相当） ----
+        # ---- ページ ----
         nav_menu = menu.addMenu("ページ")
         for action_id in ("next_page", "prev_page", "first_page", "last_page"):
             action = self.actions_by_id[action_id]
@@ -3706,7 +3705,7 @@ class ImageViewer(QMainWindow):
 
         menu.addSeparator()
 
-        # ---- 表示（MPC-HCの「表示」相当） ----
+        # ---- 表示 ----
         view_menu = menu.addMenu("表示")
         view_menu.addAction(self.actions_by_id["toggle_always_on_top"])
 
@@ -3776,7 +3775,6 @@ class ImageViewer(QMainWindow):
             "バージョン情報",
             "Archive Image Viewer\n\n"
             "ZIP / RAR 内の画像を表示するシンプルなビューア。\n"
-            "右クリックメニューは MPC-HC を参考にしています。"
         )
 
 
