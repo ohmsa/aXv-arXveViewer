@@ -11,6 +11,10 @@ pub struct AxvApp {
     ai: AiSettings,
     status: String,
     fullscreen: bool,
+    fit_to_window: bool,
+    zoom: f32,
+    show_about: bool,
+    show_properties: bool,
 }
 
 impl AxvApp {
@@ -30,6 +34,25 @@ impl AxvApp {
                 "Japanese font was not found in C:\\Windows\\Fonts".to_owned()
             },
             fullscreen: false,
+            fit_to_window: true,
+            zoom: 1.0,
+            show_about: false,
+            show_properties: false,
+        }
+    }
+
+    fn open_file_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("画像・アーカイブ", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "zip", "rar"])
+            .pick_file()
+        {
+            self.open(path);
+        }
+    }
+
+    fn open_folder_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            self.open(path);
         }
     }
 
@@ -52,6 +75,86 @@ impl AxvApp {
         let Some(library) = &self.library else { return };
         let last = library.pages.len().saturating_sub(1) as isize;
         self.current = (self.current as isize + delta).clamp(0, last) as usize;
+    }
+
+    fn set_page(&mut self, index: usize) {
+        if let Some(library) = &self.library {
+            self.current = index.min(library.pages.len().saturating_sub(1));
+        }
+    }
+
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+    }
+
+    fn set_zoom(&mut self, zoom: Option<f32>) {
+        match zoom {
+            Some(value) => {
+                self.fit_to_window = false;
+                self.zoom = value;
+            }
+            None => self.fit_to_window = true,
+        }
+    }
+
+    fn show_context_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let has_pages = self.library.as_ref().is_some_and(|library| !library.pages.is_empty());
+        if ui.button("開く...").clicked() {
+            self.open_file_dialog();
+            ui.close_menu();
+        }
+        if ui.button("フォルダを開く...").clicked() {
+            self.open_folder_dialog();
+            ui.close_menu();
+        }
+        if ui.button(if self.fullscreen { "全画面表示を終了  F11" } else { "全画面表示  F11" }).clicked() {
+            self.toggle_fullscreen(ctx);
+            ui.close_menu();
+        }
+        ui.separator();
+
+        ui.add_enabled_ui(has_pages, |ui| {
+            ui.menu_button("ページ", |ui| {
+                if ui.button("次の画像  → / PageDown").clicked() { self.change_page(1); ui.close_menu(); }
+                if ui.button("前の画像  ← / PageUp").clicked() { self.change_page(-1); ui.close_menu(); }
+                ui.separator();
+                if ui.button("最初の画像  Home").clicked() { self.set_page(0); ui.close_menu(); }
+                if ui.button("最後の画像  End").clicked() {
+                    let last = self.library.as_ref().map_or(0, |library| library.pages.len().saturating_sub(1));
+                    self.set_page(last);
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("拡大縮小", |ui| {
+                if ui.selectable_label(self.fit_to_window, "ウィンドウに合わせる").clicked() { self.set_zoom(None); ui.close_menu(); }
+                for (label, scale) in [("100%", 1.0), ("200%", 2.0), ("300%", 3.0), ("400%", 4.0), ("500%", 5.0)] {
+                    if ui.selectable_label(!self.fit_to_window && self.zoom == scale, label).clicked() {
+                        self.set_zoom(Some(scale));
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
+
+        ui.menu_button("表示・処理", |ui| {
+            ui.checkbox(&mut self.ai.enabled, "AIアップスケール");
+            if ui.checkbox(&mut self.ai.difference_mode, "差分領域のみ").changed() && self.ai.difference_mode {
+                self.difference_summary();
+            }
+            ui.separator();
+            if ui.add_enabled(has_pages, egui::Button::new("3枚前より古い画像を破棄  M")).clicked() {
+                self.purge_old_images();
+                ui.close_menu();
+            }
+            if ui.add_enabled(has_pages, egui::Button::new("プロパティ...")).clicked() {
+                self.show_properties = true;
+                ui.close_menu();
+            }
+        });
+        ui.separator();
+        if ui.button("バージョン情報...").clicked() { self.show_about = true; ui.close_menu(); }
+        if ui.button("終了").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
     }
 
     fn ensure_texture(&mut self, ctx: &egui::Context) {
@@ -123,18 +226,22 @@ impl eframe::App for AxvApp {
         if ctx.input(|input| input.key_pressed(Key::ArrowRight) || input.key_pressed(Key::PageDown)) { self.change_page(1); }
         if ctx.input(|input| input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::PageUp)) { self.change_page(-1); }
         if ctx.input(|input| input.key_pressed(Key::M)) { self.purge_old_images(); }
+        if ctx.input(|input| input.key_pressed(Key::Home)) { self.set_page(0); }
+        if ctx.input(|input| input.key_pressed(Key::End)) {
+            let last = self.library.as_ref().map_or(0, |library| library.pages.len().saturating_sub(1));
+            self.set_page(last);
+        }
         if ctx.input(|input| input.key_pressed(Key::F11)) {
-            self.fullscreen = !self.fullscreen;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            self.toggle_fullscreen(ctx);
         }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("開く").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() { self.open(path); }
+                    self.open_file_dialog();
                 }
                 if ui.button("フォルダ").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() { self.open(path); }
+                    self.open_folder_dialog();
                 }
                 ui.separator();
                 ui.checkbox(&mut self.ai.enabled, "AIアップスケール");
@@ -146,16 +253,49 @@ impl eframe::App for AxvApp {
         });
 
         self.ensure_texture(ctx);
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::BLACK)).show(ctx, |ui| {
+        let panel = egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::BLACK)).show(ctx, |ui| {
             if let Some(texture) = &self.texture {
                 let available = ui.available_size();
                 let source = texture.size_vec2();
-                let scale = (available.x / source.x).min(available.y / source.y);
+                let scale = if self.fit_to_window {
+                    (available.x / source.x).min(available.y / source.y)
+                } else {
+                    self.zoom
+                };
                 ui.centered_and_justified(|ui| { ui.image((texture.id(), source * scale)); });
             } else {
                 ui.centered_and_justified(|ui| { ui.label("ここへファイルまたはフォルダをドロップ"); });
             }
         });
+        panel.response.context_menu(|ui| self.show_context_menu(ui, ctx));
+
+        if self.show_about {
+            egui::Window::new("バージョン情報")
+                .open(&mut self.show_about)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.heading("aXv");
+                    ui.label("Rust generic viewer 0.1.0");
+                    ui.label("画像・ZIP・RARビューア");
+                });
+        }
+
+        if self.show_properties {
+            egui::Window::new("プロパティ")
+                .open(&mut self.show_properties)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    if let Some(library) = &self.library {
+                        ui.label(format!("入力: {}", library.source.display()));
+                        ui.label(format!("画像数: {}", library.pages.len()));
+                        ui.label(format!("現在: {}", library.pages[self.current].name));
+                        ui.label(format!("デコード済み: {:.1} MiB", library.decoded_bytes() as f64 / 1_048_576.0));
+                    } else {
+                        ui.label("画像が開かれていません");
+                    }
+                });
+        }
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let page = self.library.as_ref().map_or_else(|| "0 / 0".to_owned(), |lib| format!("{} / {}", self.current + 1, lib.pages.len()));
