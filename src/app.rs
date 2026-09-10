@@ -1,6 +1,6 @@
 use crate::{ai::AiSettings, difference::find_difference, library::ImageLibrary};
-use eframe::egui::{self, ColorImage, Key, TextureHandle, TextureOptions};
-use std::path::PathBuf;
+use eframe::egui::{self, ColorImage, FontData, FontDefinitions, FontFamily, Key, TextureHandle, TextureOptions};
+use std::{fs, path::{Path, PathBuf}};
 
 pub struct AxvApp {
     library: Option<ImageLibrary>,
@@ -16,6 +16,7 @@ pub struct AxvApp {
 impl AxvApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        let japanese_font_loaded = install_windows_japanese_font(&cc.egui_ctx);
         Self {
             library: None,
             current: 0,
@@ -23,7 +24,11 @@ impl AxvApp {
             texture: None,
             texture_page: None,
             ai: AiSettings::default(),
-            status: "フォルダ、ZIP、RAR、または画像を開いてください".to_owned(),
+            status: if japanese_font_loaded {
+                "フォルダ、ZIP、RAR、または画像を開いてください".to_owned()
+            } else {
+                "Japanese font was not found in C:\\Windows\\Fonts".to_owned()
+            },
             fullscreen: false,
         }
     }
@@ -83,6 +88,32 @@ impl AxvApp {
             };
         }
     }
+}
+
+fn install_windows_japanese_font(ctx: &egui::Context) -> bool {
+    // Windows 10/11の標準日本語フォントを優先順に探す。同梱やコピーはせず、
+    // 実行中のWindowsにインストール済みのフォントだけを読み込む。
+    const CANDIDATES: &[&str] = &[
+        r"C:\Windows\Fonts\YuGothM.ttc",
+        r"C:\Windows\Fonts\YuGothR.ttc",
+        r"C:\Windows\Fonts\meiryo.ttc",
+        r"C:\Windows\Fonts\msgothic.ttc",
+    ];
+
+    let Some(bytes) = CANDIDATES.iter().find_map(|path| fs::read(Path::new(path)).ok()) else {
+        return false;
+    };
+
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "axv-japanese".to_owned(),
+        FontData::from_owned(bytes).into(),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().insert(0, "axv-japanese".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    true
 }
 
 impl eframe::App for AxvApp {
