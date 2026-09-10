@@ -15,6 +15,7 @@ pub struct AxvApp {
     zoom: f32,
     show_about: bool,
     show_properties: bool,
+    show_options: bool,
 }
 
 impl AxvApp {
@@ -38,6 +39,7 @@ impl AxvApp {
             zoom: 1.0,
             show_about: false,
             show_properties: false,
+            show_options: false,
         }
     }
 
@@ -147,11 +149,16 @@ impl AxvApp {
                 self.purge_old_images();
                 ui.close_menu();
             }
-            if ui.add_enabled(has_pages, egui::Button::new("プロパティ...")).clicked() {
-                self.show_properties = true;
-                ui.close_menu();
-            }
         });
+        ui.separator();
+        if ui.add_enabled(has_pages, egui::Button::new("プロパティ...")).clicked() {
+            self.show_properties = true;
+            ui.close_menu();
+        }
+        if ui.button("オプション...").clicked() {
+            self.show_options = true;
+            ui.close_menu();
+        }
         ui.separator();
         if ui.button("バージョン情報...").clicked() { self.show_about = true; ui.close_menu(); }
         if ui.button("終了").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
@@ -294,6 +301,33 @@ impl eframe::App for AxvApp {
                     } else {
                         ui.label("画像が開かれていません");
                     }
+                });
+        }
+
+        if self.show_options {
+            egui::Window::new("オプション")
+                .open(&mut self.show_options)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.heading("AI処理");
+                    ui.checkbox(&mut self.ai.enabled, "AIアップスケールを有効にする");
+                    ui.checkbox(&mut self.ai.difference_mode, "前画像との差分領域だけを処理する");
+                    ui.add_enabled_ui(self.ai.difference_mode, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("画素差の許容値");
+                            ui.add(egui::Slider::new(&mut self.ai.difference_threshold, 0..=32));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("切り出し領域の余白");
+                            ui.add(egui::Slider::new(&mut self.ai.difference_padding, 0..=128).suffix(" px"));
+                        });
+                        ui.label("PNG・TLGなどの可逆画像は許容値0を推奨します。");
+                    });
+                    ui.separator();
+                    ui.heading("メモリ");
+                    ui.label("Mキー: 現在位置の3枚前より古いデコード画像を破棄");
+                    ui.label("元ファイルと再デコード用データは削除しません。");
                 });
         }
 
