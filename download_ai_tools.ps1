@@ -11,7 +11,9 @@ $headers = @{ "User-Agent" = "aXv-arXveViewer-setup" }
 $projects = @(
     @{ repo = "xinntao/Real-ESRGAN"; exe = "realesrgan-ncnn-vulkan.exe"; model = "models" },
     @{ repo = "nihui/realcugan-ncnn-vulkan"; exe = "realcugan-ncnn-vulkan.exe"; model = "models-se" },
-    @{ repo = "nihui/waifu2x-ncnn-vulkan"; exe = "waifu2x-ncnn-vulkan.exe"; model = "models-cunet" }
+    @{ repo = "nihui/waifu2x-ncnn-vulkan"; exe = "waifu2x-ncnn-vulkan.exe"; model = "models-cunet" },
+    @{ repo = "nihui/realsr-ncnn-vulkan"; exe = "realsr-ncnn-vulkan.exe"; model = "models-DF2K" },
+    @{ repo = "nihui/srmd-ncnn-vulkan"; exe = "srmd-ncnn-vulkan.exe"; model = "models-srmd" }
 )
 
 New-Item -ItemType Directory -Force $destination, $temporary | Out-Null

@@ -64,13 +64,24 @@ impl Page {
 fn sort_pages(pages: &mut [Page], natural_sort: bool) {
     // AIキューはこの配列のindexをページIDとして使う。デコード後やキャッシュ
     // 交換後に再ソートせず、表示順と処理順が途中で食い違わないようにする。
-    pages.sort_by(|left, right| {
-        if natural_sort {
-            natord::compare_ignore_case(&left.name, &right.name).then_with(|| left.name.cmp(&right.name))
-        } else {
-            left.name.cmp(&right.name)
-        }
-    });
+    pages.sort_by(|left, right| traversal_compare(&left.name, &right.name, natural_sort));
+}
+
+fn traversal_compare(left: &str, right: &str, natural_sort: bool) -> std::cmp::Ordering {
+    let left = left.replace('\\', "/");
+    let right = right.replace('\\', "/");
+    let a = left.split('/').collect::<Vec<_>>();
+    let b = right.split('/').collect::<Vec<_>>();
+    for index in 0..a.len().max(b.len()) {
+        let Some(&av) = a.get(index) else { return std::cmp::Ordering::Less };
+        let Some(&bv) = b.get(index) else { return std::cmp::Ordering::Greater };
+        let a_file = index + 1 == a.len();
+        let b_file = index + 1 == b.len();
+        if a_file != b_file { return if a_file { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }; }
+        let order = if natural_sort { natord::compare_ignore_case(av, bv) } else { av.cmp(bv) };
+        if order != std::cmp::Ordering::Equal { return order; }
+    }
+    left.cmp(&right)
 }
 
 pub struct ImageLibrary {
@@ -145,13 +156,23 @@ fn detect_kind(path: &Path) -> Result<String> {
 
 fn load_folder(path: &Path) -> Result<Vec<Page>> {
     let mut pages = Vec::new();
-    for entry in fs::read_dir(path)? {
-        let path = entry?.path();
-        if path.is_file() && IMAGE_EXTENSIONS.contains(&extension(&path).as_str()) {
-            pages.push(Page::new(file_name(&path), fs::read(&path)?));
+    load_folder_recursive(path, path, &mut pages)?;
+    Ok(pages)
+}
+
+fn load_folder_recursive(root: &Path, directory: &Path, pages: &mut Vec<Page>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_file() && IMAGE_EXTENSIONS.contains(&extension(&path).as_str()) {
+            let name = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            pages.push(Page::new(name, fs::read(&path)?));
+        } else if file_type.is_dir() && !file_type.is_symlink() {
+            load_folder_recursive(root, &path, pages)?;
         }
     }
-    Ok(pages)
+    Ok(())
 }
 
 fn load_zip(path: &Path) -> Result<Vec<Page>> {

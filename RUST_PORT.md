@@ -16,9 +16,9 @@
 
 ## ビルド
 
-1. [rustup](https://rustup.rs/)からRustをインストールします。
-2. Visual Studio Installerで「C++によるデスクトップ開発」とWindows SDKを導入します。
-3. PowerShellまたはコマンドプロンプトで`build_rust.bat`を実行します。
+PowerShellまたはコマンドプロンプトで`build_rust.bat`を実行します。Rustが無ければ
+プロジェクト内へ公式Rustupを導入し、Microsoft C++ Build Toolsが無ければ、説明と
+確認を表示した後にwinget経由で公式インストーラーを実行します。
 
 ```powershell
 build_rust.bat
@@ -36,9 +36,13 @@ Rust設定は変更しません。
 build_rust_portable.bat
 ```
 
-MSVCリンカーとWindows SDKはRustに含まれないため、Visual Studio Build Toolsの
-「C++によるデスクトップ開発」は必要です。一度導入済みなら、Rust本体については
-このバッチだけで準備できます。
+MSVCリンカーとWindows SDKはRustに含まれません。未導入の場合は
+`ensure_msvc_build_tools.bat`がMicrosoft公式のVisual Studio Build Toolsと
+`Microsoft.VisualStudio.Workload.VCTools`を案内・導入します。
+
+RustupはMITまたはApache-2.0で提供されています。Visual Studio Build Toolsには
+Microsoftのライセンス条項が別途適用されます。どちらも本リポジトリへ同梱・再配布せず、
+利用者が確認した場合だけ公式配布元から取得します。
 
 ## 次の実装
 

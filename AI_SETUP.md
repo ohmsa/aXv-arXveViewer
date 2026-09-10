@@ -11,6 +11,8 @@ Windowsでは `download_ai_tools.bat` を実行すると、公式GitHub Releases
 - Real-ESRGAN ncnn Vulkan（BSD-3-Clause）
 - Real-CUGAN ncnn Vulkan（MIT）
 - waifu2x ncnn Vulkan（MIT）
+- RealSR ncnn Vulkan（MIT）
+- SRMD ncnn Vulkan（MIT）
 
 生成される基本構成は次のとおりです。
 
@@ -19,11 +21,20 @@ ai_upscale/
   realesrgan-ncnn-vulkan.exe
   realcugan-ncnn-vulkan.exe
   waifu2x-ncnn-vulkan.exe
+  realsr-ncnn-vulkan.exe
+  srmd-ncnn-vulkan.exe
+  ac_cli.exe                 # 任意: Anime4KCPP CLI
   vcomp140.dll
   models/
   models-se/
   models-cunet/
+  models-DF2K/
+  models-srmd/
 ```
+
+`ac_cli.exe` と Real-CUGAN が両方見つかる場合は「Anime4K → Real-CUGAN」が
+選択肢に現れます。Anime4KCPPは動画モジュールを含まないCLIがMIT、動画モジュールを
+含む構成はGPLv3です。取得したバイナリの構成とライセンスを確認してから配置してください。
 
 OpenVINOを使う場合は `python -m pip install -r requirements-openvino.txt` を実行し、
 権利を確認したONNXモデルを `ai_upscale/openvino_models/` に配置してください。
