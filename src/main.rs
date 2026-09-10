@@ -1,7 +1,11 @@
 mod ai;
 mod app;
 mod difference;
+mod folder;
 mod library;
+mod scheduler;
+mod settings;
+mod tlg;
 
 use anyhow::Result;
 

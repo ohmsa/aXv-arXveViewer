@@ -321,6 +321,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "image",
+ "libloading",
  "natord",
  "rfd",
  "zip",

@@ -9,6 +9,7 @@ description = "aXv - a fast archive image viewer"
 anyhow = "1.0"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+libloading = "0.8"
 natord = "1.0"
 rfd = "0.15"
 zip = { version = "2.4", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd"] }
