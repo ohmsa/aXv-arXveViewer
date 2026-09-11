@@ -14,11 +14,12 @@ pub struct Page {
     pub name: String,
     encoded: Arc<[u8]>,
     pub decoded: Option<Arc<RgbaImage>>,
+    revision: u64,
 }
 
 impl Page {
     fn new(name: String, encoded: Vec<u8>) -> Self {
-        Self { name, encoded: encoded.into(), decoded: None }
+        Self { name, encoded: encoded.into(), decoded: None, revision: 0 }
     }
 
     pub fn ensure_decoded(&mut self) -> Result<Arc<RgbaImage>> {
@@ -58,7 +59,10 @@ impl Page {
 
     pub fn replace_decoded(&mut self, image: RgbaImage) {
         self.decoded = Some(Arc::new(image));
+        self.revision = self.revision.wrapping_add(1);
     }
+
+    pub fn revision(&self) -> u64 { self.revision }
 }
 
 fn sort_pages(pages: &mut [Page], natural_sort: bool) {
@@ -134,6 +138,7 @@ impl ImageLibrary {
     pub fn restore_originals(&mut self) -> Result<()> {
         for page in &mut self.pages {
             page.decoded = Some(Arc::new(page.decode_original()?));
+            page.revision = page.revision.wrapping_add(1);
         }
         Ok(())
     }
@@ -297,10 +302,26 @@ mod tests {
             generation: 1,
         };
         for page in &mut library.pages { page.ensure_decoded().unwrap(); }
-        library.purge_before_current_window(7, 3);
+        let before = library.decoded_bytes();
+        let freed = library.purge_before_current_window(7, 3);
+        assert_eq!(before, 8 * 2 * 2 * 4);
+        assert_eq!(freed, 4 * 2 * 2 * 4);
+        assert_eq!(library.decoded_bytes(), before - freed);
         assert_eq!(library.pages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
                    ["page0.png", "page1.png", "page2.png", "page3.png", "page4.png", "page5.png", "page6.png", "page7.png"]);
         assert!(library.pages[0].decoded.is_none());
+        assert!(!library.pages[0].encoded.is_empty());
         assert_eq!(library.pages[0].ensure_decoded().unwrap().get_pixel(0, 0).0[0], 0);
+    }
+
+    #[test]
+    fn replacing_or_restoring_pixels_changes_revision() {
+        let mut page = Page::new("page.png".into(), png(1));
+        assert_eq!(page.revision(), 0);
+        page.replace_decoded(RgbaImage::new(2, 2));
+        assert_eq!(page.revision(), 1);
+        let mut library = ImageLibrary { source: "test".into(), pages: vec![page], generation: 1 };
+        library.restore_originals().unwrap();
+        assert_eq!(library.pages[0].revision(), 2);
     }
 }

@@ -1,5 +1,22 @@
 use image::RgbaImage;
 
+/// Cheap first-pass distance used only to rank candidate base images. A full
+/// block comparison is still performed after the best candidate is selected.
+pub fn sampled_difference_score(left: &RgbaImage, right: &RgbaImage) -> u64 {
+    if left.dimensions() != right.dimensions() { return u64::MAX; }
+    let (width, height) = left.dimensions();
+    let step = 8_usize;
+    let mut score = 0_u64;
+    for y in (0..height).step_by(step) {
+        for x in (0..width).step_by(step) {
+            let a = left.get_pixel(x, y).0;
+            let b = right.get_pixel(x, y).0;
+            score = score.saturating_add(a.iter().zip(b).map(|(x, y)| u64::from(x.abs_diff(y))).sum::<u64>());
+        }
+    }
+    score
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DifferenceRect {
     pub x: u32,
@@ -128,6 +145,15 @@ mod tests {
         changed.put_pixel(155, 155, Rgba([255, 0, 0, 255]));
         let regions = find_difference_regions(&base, &changed, 0, 0);
         assert_eq!(regions.len(), 2);
+    }
+
+    #[test]
+    fn sampled_score_prefers_the_more_similar_image() {
+        let base = RgbaImage::from_pixel(64, 64, Rgba([20, 30, 40, 255]));
+        let mut close = base.clone();
+        close.put_pixel(8, 8, Rgba([21, 30, 40, 255]));
+        let far = RgbaImage::from_pixel(64, 64, Rgba([220, 10, 10, 255]));
+        assert!(sampled_difference_score(&base, &close) < sampled_difference_score(&base, &far));
     }
 
 }

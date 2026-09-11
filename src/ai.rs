@@ -6,6 +6,7 @@ use std::{fs, path::{Path, PathBuf}, process::{Command, Stdio}, sync::{atomic::{
 pub struct AiSettings {
     pub enabled: bool,
     pub difference_mode: bool,
+    pub difference_strategy: usize,
     pub difference_threshold: u8,
     pub difference_padding: u32,
     pub engine: usize,
@@ -265,6 +266,7 @@ impl Default for AiSettings {
         Self {
             enabled: true,
             difference_mode: false,
+            difference_strategy: 0,
             difference_threshold: 0,
             difference_padding: 48,
             engine: 1,

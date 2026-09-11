@@ -1,14 +1,23 @@
-use crate::{ai::AiSettings, difference::{find_difference, find_difference_regions}, library::ImageLibrary, scheduler::processing_order};
+use crate::{ai::AiSettings, difference::{find_difference, find_difference_regions, sampled_difference_score}, library::ImageLibrary, scheduler::{accepts_result, prioritize_by_similarity, processing_order}};
 use crate::folder::{EntryKind, FolderEntry};
 use eframe::egui::{self, ColorImage, FontData, FontDefinitions, FontFamily, Key, TextureHandle, TextureOptions};
-use std::{collections::{HashSet, VecDeque}, fs, path::{Path, PathBuf}, sync::{atomic::{AtomicU64, Ordering}, mpsc::Receiver, Arc}};
+use std::{collections::{HashMap, HashSet, VecDeque}, fs, path::{Path, PathBuf}, sync::{atomic::{AtomicU64, Ordering}, mpsc::Receiver, Arc}};
+
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+struct GpuTextureKey { generation: u64, page: usize, rotation: u8, original: bool, revision: u64 }
+
+struct GpuTextureEntry { texture: TextureHandle, bytes: u64, last_used: u64 }
 
 pub struct AxvApp {
     library: Option<ImageLibrary>,
     current: usize,
     generation: u64,
     texture: Option<TextureHandle>,
-    texture_page: Option<(u64, usize, u8, bool)>,
+    texture_page: Option<GpuTextureKey>,
+    gpu_textures: HashMap<GpuTextureKey, GpuTextureEntry>,
+    gpu_texture_bytes: u64,
+    gpu_clock: u64,
+    gpu_cache_limit_mib: u32,
     ai: AiSettings,
     status: String,
     fullscreen: bool,
@@ -37,6 +46,7 @@ pub struct AxvApp {
     ai_receiver: Option<Receiver<crate::ai::AiResult>>,
     ai_processing: Option<usize>,
     ai_processed: HashSet<usize>,
+    similarity_anchor: Option<usize>,
     last_ai_elapsed: Option<std::time::Duration>,
     keybinds: Vec<String>,
     show_pre_ai: bool,
@@ -57,14 +67,37 @@ impl AxvApp {
         let mut ai = AiSettings::default();
         ai.enabled = saved.ai_enabled;
         ai.difference_mode = saved.difference_mode;
+        ai.difference_strategy = saved.difference_strategy.min(2);
+        ai.difference_mode = ai.difference_strategy != 0;
         ai.difference_threshold = saved.difference_threshold;
         ai.difference_padding = saved.difference_padding;
+        ai.engine = saved.ai_engine;
+        ai.model = saved.ai_model;
+        ai.denoise_mode = saved.denoise_mode.min(2);
+        ai.upscale_mode = saved.upscale_mode.min(5);
+        ai.fixed_count = saved.fixed_count.max(1);
+        ai.target_manual = saved.target_manual;
+        ai.target_width = saved.target_width;
+        ai.target_height = saved.target_height;
+        ai.prefetch_all = saved.prefetch_all;
+        ai.prefetch_depth = saved.prefetch_depth;
+        ai.skip_low_res_ai = saved.skip_low_res_ai;
+        ai.skip_low_res_display = saved.skip_low_res_display;
+        ai.skip_low_res_threshold = saved.skip_low_res_threshold;
+        ai.batch_processing = saved.batch_processing;
+        ai.gpu = saved.gpu.min(4);
+        let keybinds = if saved.keybinds.len() == keybind_rows().len() { saved.keybinds.clone() }
+            else { keybind_rows().iter().map(|(_, key)| (*key).to_owned()).collect() };
         Self {
             library: None,
             current: 0,
             generation: 0,
             texture: None,
             texture_page: None,
+            gpu_textures: HashMap::new(),
+            gpu_texture_bytes: 0,
+            gpu_clock: 0,
+            gpu_cache_limit_mib: saved.gpu_cache_limit_mib.clamp(128, 8192),
             ai,
             status: if japanese_font_loaded {
                 "フォルダ、ZIP、RAR、または画像を開いてください".to_owned()
@@ -72,17 +105,17 @@ impl AxvApp {
                 "Japanese font was not found in C:\\Windows\\Fonts".to_owned()
             },
             fullscreen: false,
-            fit_to_window: true,
-            zoom: 1.0,
+            fit_to_window: saved.fit_to_window,
+            zoom: (saved.zoom_percent.clamp(10, 800) as f32) / 100.0,
             show_about: false,
             show_properties: false,
             show_options: false,
             options_tab: 0,
             path_text: String::new(),
-            rotation: 0,
-            aspect_mode: 0,
-            always_on_top: false,
-            auto_resize_window: false,
+            rotation: saved.rotation.min(3),
+            aspect_mode: saved.aspect_mode.min(2),
+            always_on_top: saved.always_on_top,
+            auto_resize_window: saved.auto_resize_window,
             natural_sort: saved.natural_sort,
             debug_logging: saved.debug_logging,
             fullscreen_exit_mode: saved.fullscreen_exit_mode.min(1),
@@ -97,12 +130,13 @@ impl AxvApp {
             ai_receiver: None,
             ai_processing: None,
             ai_processed: HashSet::new(),
+            similarity_anchor: None,
             last_ai_elapsed: None,
-            keybinds: keybind_rows().iter().map(|(_, key)| (*key).to_owned()).collect(),
+            keybinds,
             show_pre_ai: false,
             show_difference_region: false,
             difference_regions: Vec::new(),
-            folder_icon_size: 1,
+            folder_icon_size: saved.folder_icon_size.min(3),
             active_generation: Arc::new(AtomicU64::new(0)),
             last_pointer_position: None,
             last_pointer_activity: std::time::Instant::now(),
@@ -127,13 +161,13 @@ impl AxvApp {
         self.generation = self.generation.wrapping_add(1);
         self.active_generation.store(self.generation, Ordering::Release);
         self.library = None;
-        self.texture = None;
-        self.texture_page = None;
+        self.clear_gpu_cache();
         self.current = 0;
         self.ai_queue.clear();
         self.ai_receiver = None;
         self.ai_processing = None;
         self.ai_processed.clear();
+        self.similarity_anchor = None;
         self.difference_regions.clear();
         self.folder_path = None;
         self.folder_entries.clear();
@@ -159,10 +193,10 @@ impl AxvApp {
                 self.generation = self.generation.wrapping_add(1);
                 self.active_generation.store(self.generation, Ordering::Release);
                 self.library = None;
-                self.texture = None;
-                self.texture_page = None;
+                self.clear_gpu_cache();
                 self.ai_receiver = None;
                 self.ai_queue.clear();
+                self.similarity_anchor = None;
                 self.folder_entries = entries;
                 self.folder_path = Some(path.clone());
                 self.path_text = path.display().to_string();
@@ -261,10 +295,23 @@ impl AxvApp {
     fn refresh_ai_queue(&mut self) {
         let Some(library) = &self.library else { return };
         let processing = self.ai_processing;
-        self.ai_queue = processing_order(library.pages.len(), self.current).into_iter()
+        let queue = processing_order(library.pages.len(), self.current).into_iter()
             .filter(|index| !self.ai_processed.contains(index) && Some(*index) != processing)
             .filter(|index| !(self.ai.skip_low_res_ai && self.page_is_low_resolution(*index)))
-            .collect();
+            .collect::<Vec<_>>();
+        if self.ai.difference_strategy == 2 {
+            if let Some(anchor) = self.similarity_anchor.and_then(|index| library.pages.get(index))
+                .and_then(|page| page.decode_original().ok()) {
+                let ranked = queue.into_iter().enumerate().map(|(position, index)| {
+                    let score = library.pages[index].decode_original().ok()
+                        .map_or(u64::MAX, |image| sampled_difference_score(&anchor, &image));
+                    (index, score, position)
+                }).collect::<Vec<_>>();
+                self.ai_queue = prioritize_by_similarity(ranked, self.current).into();
+                return;
+            }
+        }
+        self.ai_queue = queue.into();
     }
 
     fn page_is_low_resolution(&self, index: usize) -> bool {
@@ -297,11 +344,12 @@ impl AxvApp {
         self.ai_receiver = None;
         self.ai_processing = None;
         self.ai_processed.clear();
+        self.similarity_anchor = None;
         if let Some(library) = &mut self.library {
             library.generation = self.generation;
             if let Err(error) = library.restore_originals() { self.status = error.to_string(); }
         }
-        self.texture_page = None;
+        self.clear_gpu_cache();
         self.refresh_ai_queue();
         self.status = "AIキューと処理結果をリセットしました".to_owned();
     }
@@ -313,18 +361,20 @@ impl AxvApp {
                     self.ai_receiver = None;
                     self.ai_processing = None;
                     self.last_ai_elapsed = Some(message.elapsed);
-                    if message.generation == self.generation {
+                    let page_count = self.library.as_ref().map_or(0, |library| library.pages.len());
+                    if accepts_result(self.generation, message.generation, message.index, page_count) {
                         match message.result {
                             Ok(image) => {
                                 if let Some(library) = &mut self.library {
                                     if let Some(page) = library.pages.get_mut(message.index) { page.replace_decoded(image); }
                                 }
+                                self.invalidate_gpu_page(message.generation, message.index);
                                 self.ai_processed.insert(message.index);
+                                self.similarity_anchor = Some(message.index);
                                 if message.index == self.current { self.texture_page = None; }
                                 self.status = format!("AI処理完了: {}ページ", message.index + 1);
                             }
                             Err(error) => {
-                                self.ai_processed.insert(message.index);
                                 self.status = error;
                             }
                         }
@@ -342,8 +392,13 @@ impl AxvApp {
         let Some(index) = self.ai_queue.pop_front() else { return };
         let Some(library) = &mut self.library else { return };
         let mut composition = None;
-        let image = if self.ai.difference_mode && index > 0 && self.ai_processed.contains(&(index - 1)) {
-            let previous_original = library.pages[index - 1].decode_original();
+        let base_index = match self.ai.difference_strategy {
+            1 => index.checked_sub(1).filter(|candidate| self.ai_processed.contains(candidate)),
+            2 => best_similar_base(library, &self.ai_processed, index),
+            _ => None,
+        };
+        let image = if let Some(base_index) = base_index {
+            let previous_original = library.pages[base_index].decode_original();
             let current_original = library.pages[index].decode_original();
             match (previous_original, current_original) {
                 (Ok(previous_original), Ok(current_original)) => {
@@ -356,12 +411,12 @@ impl AxvApp {
                                 let crop = image::imageops::crop_imm(&current_original, rect.x, rect.y, rect.width, rect.height).to_image();
                                 (crop, rect)
                             }).collect();
-                            let Some(base) = library.pages[index - 1].decoded.as_ref().map(|image| image.as_ref().clone()) else { return };
+                            let Some(base) = library.pages[base_index].decoded.as_ref().map(|image| image.as_ref().clone()) else { return };
                             composition = Some((base, crops));
                             Arc::new(current_original)
                         } else { Arc::new(current_original) }
                     } else {
-                        let Some(base) = library.pages[index - 1].decoded.as_ref().map(|image| image.as_ref().clone()) else { return };
+                        let Some(base) = library.pages[base_index].decoded.as_ref().map(|image| image.as_ref().clone()) else { return };
                         library.pages[index].replace_decoded(base);
                         self.ai_processed.insert(index);
                         self.refresh_ai_queue();
@@ -527,26 +582,91 @@ impl AxvApp {
         if ui.button("終了").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
     }
 
-    fn ensure_texture(&mut self, ctx: &egui::Context) {
-        let Some(library) = &mut self.library else { return };
-        let key = (library.generation, self.current, self.rotation, self.show_pre_ai);
-        if self.texture_page == Some(key) { return; }
-        let image_result = if self.show_pre_ai { library.pages[self.current].decode_original().map(Arc::new) } else { library.pages[self.current].ensure_decoded() };
-        match image_result {
-            Ok(image) => {
-                let rotated = match self.rotation {
-                    1 => image::imageops::rotate90(image.as_ref()),
-                    2 => image::imageops::rotate180(image.as_ref()),
-                    3 => image::imageops::rotate270(image.as_ref()),
-                    _ => image.as_ref().clone(),
-                };
-                let size = [rotated.width() as usize, rotated.height() as usize];
-                let color = ColorImage::from_rgba_unmultiplied(size, rotated.as_raw());
-                self.texture = Some(ctx.load_texture(format!("page-{}-{}-{}-{}", key.0, key.1, key.2, key.3), color, TextureOptions::LINEAR));
-                self.texture_page = Some(key);
-            }
-            Err(error) => self.status = error.to_string(),
+    fn texture_key(&self, page: usize, rotation: u8, original: bool) -> Option<GpuTextureKey> {
+        let library = self.library.as_ref()?;
+        let revision = if original { 0 } else { library.pages.get(page)?.revision() };
+        Some(GpuTextureKey { generation: library.generation, page, rotation, original, revision })
+    }
+
+    fn load_texture_for_page(&mut self, ctx: &egui::Context, page: usize, rotation: u8, original: bool) -> Result<TextureHandle, String> {
+        let key = self.texture_key(page, rotation, original).ok_or_else(|| "画像がありません".to_owned())?;
+        self.gpu_clock = self.gpu_clock.wrapping_add(1);
+        if let Some(entry) = self.gpu_textures.get_mut(&key) {
+            entry.last_used = self.gpu_clock;
+            return Ok(entry.texture.clone());
         }
+        let image = {
+            let library = self.library.as_mut().ok_or_else(|| "画像がありません".to_owned())?;
+            let page = library.pages.get_mut(page).ok_or_else(|| "ページがありません".to_owned())?;
+            if original { page.decode_original().map(Arc::new) } else { page.ensure_decoded() }
+                .map_err(|error| error.to_string())?
+        };
+        let rotated = match rotation {
+            1 => image::imageops::rotate90(image.as_ref()),
+            2 => image::imageops::rotate180(image.as_ref()),
+            3 => image::imageops::rotate270(image.as_ref()),
+            _ => image.as_ref().clone(),
+        };
+        let bytes = u64::from(rotated.width()) * u64::from(rotated.height()) * 4;
+        let color = ColorImage::from_rgba_unmultiplied([rotated.width() as usize, rotated.height() as usize], rotated.as_raw());
+        let texture = ctx.load_texture(
+            format!("page-{}-{}-{}-{}-{}", key.generation, key.page, key.rotation, key.original, key.revision),
+            color, TextureOptions::LINEAR,
+        );
+        self.gpu_texture_bytes = self.gpu_texture_bytes.saturating_add(bytes);
+        self.gpu_textures.insert(key, GpuTextureEntry { texture: texture.clone(), bytes, last_used: self.gpu_clock });
+        self.evict_gpu_textures();
+        Ok(texture)
+    }
+
+    fn ensure_texture(&mut self, ctx: &egui::Context) {
+        let Some(key) = self.texture_key(self.current, self.rotation, self.show_pre_ai) else { return };
+        if self.texture_page == Some(key) { return; }
+        match self.load_texture_for_page(ctx, self.current, self.rotation, self.show_pre_ai) {
+            Ok(texture) => { self.texture = Some(texture); self.texture_page = Some(key); }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn warm_gpu_cache(&mut self, ctx: &egui::Context) {
+        if self.folder_path.is_some() || self.show_pre_ai { return; }
+        let Some(count) = self.library.as_ref().map(|library| library.pages.len()) else { return };
+        for page in processing_order(count, self.current).into_iter().take(16) {
+            let Some(key) = self.texture_key(page, 0, false) else { continue };
+            if !self.gpu_textures.contains_key(&key) {
+                let _ = self.load_texture_for_page(ctx, page, 0, false);
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                break;
+            }
+        }
+    }
+
+    fn evict_gpu_textures(&mut self) {
+        let limit = u64::from(self.gpu_cache_limit_mib) * 1_048_576;
+        while self.gpu_texture_bytes > limit {
+            let victim = self.gpu_textures.iter()
+                .filter(|(key, _)| key.generation != self.generation || key.page.abs_diff(self.current) > 2)
+                .min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| *key);
+            let Some(victim) = victim else { break };
+            if let Some(entry) = self.gpu_textures.remove(&victim) {
+                self.gpu_texture_bytes = self.gpu_texture_bytes.saturating_sub(entry.bytes);
+            }
+        }
+    }
+
+    fn invalidate_gpu_page(&mut self, generation: u64, page: usize) {
+        let keys = self.gpu_textures.keys().copied()
+            .filter(|key| key.generation == generation && key.page == page && !key.original).collect::<Vec<_>>();
+        for key in keys {
+            if let Some(entry) = self.gpu_textures.remove(&key) { self.gpu_texture_bytes = self.gpu_texture_bytes.saturating_sub(entry.bytes); }
+        }
+    }
+
+    fn clear_gpu_cache(&mut self) {
+        self.texture = None;
+        self.texture_page = None;
+        self.gpu_textures.clear();
+        self.gpu_texture_bytes = 0;
     }
 
     fn purge_old_images(&mut self) {
@@ -568,6 +688,15 @@ impl AxvApp {
             };
         }
     }
+}
+
+fn best_similar_base(library: &ImageLibrary, processed: &HashSet<usize>, current: usize) -> Option<usize> {
+    let target = library.pages.get(current)?.decode_original().ok()?;
+    processed.iter().copied().filter(|index| *index != current).filter_map(|index| {
+        let candidate = library.pages.get(index)?.decode_original().ok()?;
+        let score = sampled_difference_score(&target, &candidate);
+        (score != u64::MAX).then_some((index, score, index.abs_diff(current)))
+    }).min_by_key(|(index, score, distance)| (*score, *distance, *index)).map(|(index, _, _)| index)
 }
 
 fn install_windows_japanese_font(ctx: &egui::Context) -> bool {
@@ -605,8 +734,33 @@ impl eframe::App for AxvApp {
             passed_pages_keep_count: self.passed_pages_keep_count,
             ai_enabled: self.ai.enabled,
             difference_mode: self.ai.difference_mode,
+            difference_strategy: self.ai.difference_strategy,
             difference_threshold: self.ai.difference_threshold,
             difference_padding: self.ai.difference_padding,
+            always_on_top: self.always_on_top,
+            auto_resize_window: self.auto_resize_window,
+            fit_to_window: self.fit_to_window,
+            zoom_percent: (self.zoom * 100.0).round() as u32,
+            aspect_mode: self.aspect_mode,
+            rotation: self.rotation,
+            folder_icon_size: self.folder_icon_size,
+            keybinds: self.keybinds.clone(),
+            ai_engine: self.ai.engine,
+            ai_model: self.ai.model,
+            denoise_mode: self.ai.denoise_mode,
+            upscale_mode: self.ai.upscale_mode,
+            fixed_count: self.ai.fixed_count,
+            target_manual: self.ai.target_manual,
+            target_width: self.ai.target_width,
+            target_height: self.ai.target_height,
+            prefetch_all: self.ai.prefetch_all,
+            prefetch_depth: self.ai.prefetch_depth,
+            skip_low_res_ai: self.ai.skip_low_res_ai,
+            skip_low_res_display: self.ai.skip_low_res_display,
+            skip_low_res_threshold: self.ai.skip_low_res_threshold,
+            batch_processing: self.ai.batch_processing,
+            gpu: self.ai.gpu,
+            gpu_cache_limit_mib: self.gpu_cache_limit_mib,
         }.save();
     }
 
@@ -679,6 +833,8 @@ impl eframe::App for AxvApp {
                     ui.separator();
                     ui.label(format!("デコード済み {:.1} MiB", memory as f64 / 1_048_576.0));
                     ui.separator();
+                    ui.label(format!("GPU {:.1} MiB / {}枚", self.gpu_texture_bytes as f64 / 1_048_576.0, self.gpu_textures.len()));
+                    ui.separator();
                     ui.label(&self.status);
                     if let Some(library) = &self.library {
                         ui.add_space((ui.available_width() - 250.0).max(0.0));
@@ -689,6 +845,7 @@ impl eframe::App for AxvApp {
         }
 
         self.ensure_texture(ctx);
+        self.warm_gpu_cache(ctx);
         let mut activated_entry = None;
         let panel = egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::BLACK)).show(ctx, |ui| {
             if self.folder_path.is_some() {
@@ -868,6 +1025,8 @@ impl eframe::App for AxvApp {
             let mut close_options = false;
             let mut analyze_difference = false;
             let mut refresh_ai_after_options = false;
+            let mut reset_ai_after_options = false;
+            let mut gpu_cache_limit_changed = false;
             egui::Window::new("オプション")
                 .open(&mut self.show_options)
                 .collapsible(false)
@@ -898,6 +1057,10 @@ impl eframe::App for AxvApp {
                                 ui.label("通り過ぎたページを保持する数:");
                                 ui.add(egui::DragValue::new(&mut self.passed_pages_keep_count).range(-1..=500));
                                 if self.passed_pages_keep_count < 0 { ui.label("無制限（解放しない）"); }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("GPUテクスチャキャッシュ上限:");
+                                gpu_cache_limit_changed |= ui.add(egui::DragValue::new(&mut self.gpu_cache_limit_mib).range(128..=8192).suffix(" MiB")).changed();
                             });
                             ui.horizontal(|ui| {
                                 ui.label("暗号化ZIP/RAR/7z用パスワード:");
@@ -964,8 +1127,12 @@ impl eframe::App for AxvApp {
                             combo_row(ui, "使うGPU:", "gpu", &mut self.ai.gpu, &["自動選択（Vulkan）", "GPU 0", "GPU 1", "GPU 2", "GPU 3"]);
                             ui.label("ai_upscaleフォルダ内で検出できた実行ファイルだけを表示しています。");
                             ui.separator();
-                            let difference_changed = ui.checkbox(&mut self.ai.difference_mode, "前画像との差分領域だけを処理する").changed();
-                            ui.add_enabled_ui(self.ai.difference_mode, |ui| {
+                            let previous_strategy = self.ai.difference_strategy;
+                            combo_row(ui, "差分処理:", "difference-strategy", &mut self.ai.difference_strategy,
+                                &["使用しない", "前後差分（表示順）", "類似画像探索（AI処理順を最適化）"]);
+                            self.ai.difference_mode = self.ai.difference_strategy != 0;
+                            let difference_changed = previous_strategy != self.ai.difference_strategy;
+                            ui.add_enabled_ui(self.ai.difference_strategy != 0, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("画素差の許容値");
                                     ui.add(egui::Slider::new(&mut self.ai.difference_threshold, 0..=32));
@@ -975,7 +1142,11 @@ impl eframe::App for AxvApp {
                                     ui.add(egui::Slider::new(&mut self.ai.difference_padding, 0..=128).suffix(" px"));
                                 });
                             });
-                            if difference_changed && self.ai.difference_mode { analyze_difference = true; }
+                            if difference_changed {
+                                refresh_ai_after_options = true;
+                                reset_ai_after_options = true;
+                                if self.ai.difference_strategy != 0 { analyze_difference = true; }
+                            }
                             ui.label("初回は通常のスムーズ拡大を表示し、AI処理完了後に高精細な結果へ切り替えます。");
                         }
                         2 => {
@@ -1003,6 +1174,8 @@ impl eframe::App for AxvApp {
                     });
                 });
             if close_options { self.show_options = false; }
+            if reset_ai_after_options { self.reset_ai_processing(); }
+            if gpu_cache_limit_changed { self.evict_gpu_textures(); }
             if analyze_difference { self.difference_summary(); }
             if refresh_ai_after_options { self.refresh_ai_queue(); }
         }
