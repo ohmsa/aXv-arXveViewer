@@ -1,48 +1,37 @@
-# AIUpscaler
+# aXv
 
-> **Rust移植を開始しました。** 汎用CPU版のソースとビルド方法は
-> [RUST_PORT.md](RUST_PORT.md)を参照してください。現在のPython版も比較用に残しています。
+aXvは、Windows向けのRust製画像・アーカイブビューアです。フォルダ、単体画像、
+ZIP、RAR、7zを表示し、任意の外部ncnn Vulkanエンジンで画像をアップスケールします。
 
-Windows向けの画像・アーカイブビューアです。フォルダ、ZIP、RAR、7z内の画像を表示し、任意に外部AIエンジンで現在画像と後続画像をアップスケールします。GUIはPySide6です。
+このブランチはRust実装のみを収録しています。
 
-## 開発環境
+## ビルド
 
-Python 3.11以降を推奨します。
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python viewer.py
+```bat
+build_rust.bat
 ```
 
-OpenVINOも使う場合は `python -m pip install -r requirements-openvino.txt` を実行します。
+Rustを通常インストールしない場合は `build_rust_portable.bat` を実行します。生成物は
+`target\release\axv.exe` です。詳しくは [RUST_PORT.md](RUST_PORT.md)を参照してください。
 
-## AIエンジンの配置
+配布用ZIPは `build_release.ps1` で作成します。EXE、SHA-256、依存パッケージ一覧と、
+検出したライセンス原文を `release/` 以下へまとめます。
 
-AI実行ファイルとモデルはリポジトリに含めません。各配布元のライセンスを確認し、プロジェクト直下の `ai_upscale/` に自分で配置してください。`prepare_ai_folder.bat` を実行すると配置を検査できます。
+## 任意ランタイムの準備
 
-詳しい配置方法と公式配布物の取得については [AI_SETUP.md](AI_SETUP.md) を参照してください。
-
-対応候補はReal-ESRGAN ncnn Vulkan、Real-CUGAN ncnn Vulkan、waifu2x ncnn Vulkan、OpenVINO対応ONNXモデルです。AIフォルダがなくてもビューア機能は動作します。RARには、別途導入した `unrar` など、rarfileが利用できるコマンドが必要です。
-
-## Windows実行ファイルのビルド
-
-`build.bat` はプロジェクト内の `python_embed/` にPythonを用意し、PyInstallerでビルドします。
-
-- `build_debug.bat`: コンソール付きフォルダ版
-- `build.bat`: GUIフォルダ版
-- `build_final.bat`: GUI単一EXE版
-
-ローカルに `ai_upscale/`、`unrar.exe`、`tlg6_native.dll` がある場合だけビルド出力へコピーします。`ai_upscale/` は直下の実行ファイルと `models/`、`models-se/`、`models-cunet/`、`openvino_models/` のみをコピーし、配布物を展開したまま残っている重複サブフォルダは除外します。これらはGit管理対象外です。
-
-## テスト
-
-```powershell
-$env:QT_QPA_PLATFORM = "offscreen"
-python -m unittest discover -p test_regressions.py -v
+```bat
+setup_optional_tools.bat
 ```
+
+このバッチは利用者の確認後、MITライセンス等で公開されているncnn Vulkanツールを
+公式GitHub Releasesから直接取得して `ai_upscale/` へ展開します。自動取得しないUnRARは
+RARLAB公式ページを既定ブラウザで開き、配置先を表示します。
+
+外部ツールはaXvのリポジトリやReleaseへ同梱しません。詳しくは
+[AI_SETUP.md](AI_SETUP.md)と[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を確認してください。
+AIツールやUnRARがなくても、通常画像とZIPの閲覧機能は利用できます。
 
 ## ライセンス
 
-このリポジトリ固有のソースは [Apache License 2.0](LICENSE) です。依存ライブラリや利用者が追加するAIエンジン・モデルには別のライセンスが適用されます。[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) も確認してください。
+aXv固有のソースは[Apache License 2.0](LICENSE)です。依存ライブラリと利用者が取得する
+外部ツールには、それぞれのライセンスが適用されます。

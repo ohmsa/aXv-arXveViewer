@@ -6,6 +6,7 @@ mod library;
 mod scheduler;
 mod settings;
 mod tlg;
+mod tlg_codec;
 
 use anyhow::Result;
 

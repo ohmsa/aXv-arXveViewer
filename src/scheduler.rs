@@ -1,4 +1,3 @@
-/// Python版と同じ規則でAI処理候補を並べる。
 /// 現在ページから末尾までを表示順、その後に通過済みページを近い順に置く。
 pub fn processing_order(page_count: usize, current: usize) -> Vec<usize> {
     if page_count == 0 {

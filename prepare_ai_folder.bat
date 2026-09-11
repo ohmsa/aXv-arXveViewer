@@ -13,8 +13,8 @@ for %%F in (
   realesrgan-ncnn-vulkan.exe
   realcugan-ncnn-vulkan.exe
   waifu2x-ncnn-vulkan.exe
-  openvino_models\RealESRGAN_x4.onnx
-  openvino_models\RealESRGAN_x4_fp16.onnx
+  realsr-ncnn-vulkan.exe
+  srmd-ncnn-vulkan.exe
 ) do (
   if exist "%AI_DIR%\%%F" (
     echo [OK] %%F

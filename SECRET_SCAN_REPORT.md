@@ -16,4 +16,4 @@ Checks performed:
 
 Result: no embedded secret, credential file, user-specific absolute path, AI model, external executable, or DLL was detected.
 
-The scan matched password-handling variable names in viewer.py. Those are program logic and do not contain credentials. Runtime settings, logs, password lists, AI assets, ONNX/bin/param model files, and optional EXE/DLL binaries are excluded by `.gitignore`. The AI download helper contains only public GitHub repository identifiers and no credentials.
+Runtime settings, logs, password lists, AI assets, model files, and optional EXE/DLL binaries are excluded by `.gitignore`. The optional-tool helpers contain only public project identifiers and official public URLs; they contain no credentials.

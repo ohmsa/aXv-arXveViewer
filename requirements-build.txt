@@ -1,3 +1,0 @@
--r requirements.txt
--r requirements-openvino.txt
-PyInstaller>=6,<7

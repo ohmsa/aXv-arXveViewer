@@ -1,19 +1,6 @@
-# Python
-.venv/
-venv/
-python_embed/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.coverage
-htmlcov/
-
 # Build output
 build/
 dist/
-*.spec
-AIUpscaler_distribution/
-AIUpscaler_distribution.zip
 
 # User-supplied AI engines and models
 ai_upscale/
@@ -26,7 +13,6 @@ ai_download_cache/
 # Optional externally supplied binaries
 unrar.exe
 unrarw64*.exe
-tlg6_native.dll
 
 # User data and logs
 settings.json
@@ -55,6 +41,11 @@ Thumbs.db
 # Rust
 target/
 target-*/
+release/
 .cargo/
 .rustup/
 .build-tools/
+
+# Temporary dependency review clones
+vendor/scroll/
+vendor/lazy_static/

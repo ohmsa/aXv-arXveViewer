@@ -6,6 +6,7 @@ if ($answer -ne "yes") { exit 2 }
 
 $projectRoot = (Resolve-Path $PSScriptRoot).Path
 $destination = Join-Path $projectRoot "ai_upscale"
+$licenseDestination = Join-Path $destination "licenses"
 $temporary = Join-Path $env:TEMP ("axv-ai-" + [guid]::NewGuid())
 $headers = @{ "User-Agent" = "aXv-arXveViewer-setup" }
 $projects = @(
@@ -16,7 +17,7 @@ $projects = @(
     @{ repo = "nihui/srmd-ncnn-vulkan"; exe = "srmd-ncnn-vulkan.exe"; model = "models-srmd" }
 )
 
-New-Item -ItemType Directory -Force $destination, $temporary | Out-Null
+New-Item -ItemType Directory -Force $destination, $licenseDestination, $temporary | Out-Null
 try {
     foreach ($project in $projects) {
         $releases = Invoke-RestMethod -Headers $headers ("https://api.github.com/repos/" + $project.repo + "/releases")
@@ -32,6 +33,13 @@ try {
         Copy-Item $executable.FullName (Join-Path $destination $project.exe) -Force
         $models = Get-ChildItem $expanded -Recurse -Directory -Filter $project.model | Select-Object -First 1
         if ($models) { Copy-Item $models.FullName (Join-Path $destination $project.model) -Recurse -Force }
+        $license = Get-ChildItem $expanded -Recurse -File | Where-Object { $_.Name -match '^LICENSE(\..*)?$|^COPYING(\..*)?$' } | Select-Object -First 1
+        if ($license) {
+            $licenseName = ($project.repo -replace '/', '-') + ".txt"
+            Copy-Item $license.FullName (Join-Path $licenseDestination $licenseName) -Force
+        } else {
+            Write-Warning "The release archive did not contain a clearly named license file: $($project.repo)"
+        }
         $runtime = Get-ChildItem $executable.DirectoryName -File -Filter "vcomp140.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($runtime) { Copy-Item $runtime.FullName (Join-Path $destination "vcomp140.dll") -Force }
     }

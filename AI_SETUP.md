@@ -1,50 +1,38 @@
-# AI機能とUnRARの導入
+# AI機能と書庫ツールの導入
 
-本リポジトリは、AI実行ファイル、学習済みモデル、`unrar.exe` を再配布しません。
-利用者が各配布元のライセンスを確認したうえで導入してください。
+本リポジトリはAI実行ファイル、学習済みモデル、`unrar.exe`、`7z.exe`を
+再配布しません。任意ツールの案内は次から起動できます。
 
-## AIツール
-
-Windowsでは `download_ai_tools.bat` を実行すると、公式GitHub Releasesから次を取得し、
-必要な実行ファイルとモデルだけを `ai_upscale/` へ配置します。
-
-- Real-ESRGAN ncnn Vulkan（BSD-3-Clause）
-- Real-CUGAN ncnn Vulkan（MIT）
-- waifu2x ncnn Vulkan（MIT）
-- RealSR ncnn Vulkan（MIT）
-- SRMD ncnn Vulkan（MIT）
-
-生成される基本構成は次のとおりです。
-
-```text
-ai_upscale/
-  realesrgan-ncnn-vulkan.exe
-  realcugan-ncnn-vulkan.exe
-  waifu2x-ncnn-vulkan.exe
-  realsr-ncnn-vulkan.exe
-  srmd-ncnn-vulkan.exe
-  ac_cli.exe                 # 任意: Anime4KCPP CLI
-  vcomp140.dll
-  models/
-  models-se/
-  models-cunet/
-  models-DF2K/
-  models-srmd/
+```bat
+setup_optional_tools.bat
 ```
 
-`ac_cli.exe` と Real-CUGAN が両方見つかる場合は「Anime4K → Real-CUGAN」が
-選択肢に現れます。Anime4KCPPは動画モジュールを含まないCLIがMIT、動画モジュールを
-含む構成はGPLv3です。取得したバイナリの構成とライセンスを確認してから配置してください。
+## 自動取得するAIツール
 
-OpenVINOを使う場合は `python -m pip install -r requirements-openvino.txt` を実行し、
-権利を確認したONNXモデルを `ai_upscale/openvino_models/` に配置してください。
+利用者が画面上の説明を確認して選択した場合に限り、`download_ai_tools.ps1` が公式GitHub
+Releases APIからWindows向け配布物を直接取得します。取得物は `ai_upscale/` に置かれ、
+配布ZIP内で検出できたライセンス文は `ai_upscale/licenses/` に保存されます。
 
-## UnRAR
+- Real-ESRGAN ncnn Vulkan
+- Real-CUGAN ncnn Vulkan
+- waifu2x ncnn Vulkan
+- RealSR ncnn Vulkan
+- SRMD ncnn Vulkan
 
-RARLABのライセンスは、書面許可のないダウンロードバンドルを禁止しています。
-そのため取得バッチにはUnRARの自動ダウンロードを含めていません。
-[RARLAB公式ダウンロードページ](https://www.rarlab.com/download.htm)から利用者自身で取得し、
-ライセンスへ同意したうえで、`unrar.exe` をプロジェクト直下へ配置してください。
+GitHub APIが返した最新Releaseを使うため、配布元がファイル名や構成を変更すると取得に
+失敗することがあります。その場合はバッチがエラーを表示し、不完全な一時ファイルを削除します。
 
-`build.bat` は、ローカルに存在するこれらの任意ファイルだけを `dist` へコピーします。
+## 利用者が取得するツール
 
+### UnRAR
+
+バッチの `2` を選ぶとRARLAB公式ダウンロードページを既定ブラウザで開きます。
+ライセンスを確認して取得・展開し、`unrar.exe`を `axv.exe` と同じフォルダへ置いてください。
+公式ページへの案内だけを行い、aXvはUnRARをダウンロードまたは再配布しません。
+
+### 7-Zip
+
+バッチの `3` を選ぶと7-Zip公式ページを開きます。通常インストールして `7z` をPATHから
+実行可能にするか、利用条件を確認して `7z.exe`を `axv.exe` と同じフォルダへ置きます。
+
+TLG6デコーダはaXv本体へ組み込まれているため、追加DLLは不要です。

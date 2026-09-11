@@ -1,45 +1,88 @@
+// Copyright (c), W.Dee and contributors All rights reserved.
+// TLG6 decoding is adapted from Kirikiri Z and tlg_rs. See LICENSES/.
+
 use anyhow::{bail, Context, Result};
 use image::RgbaImage;
-use libloading::{Library, Symbol};
-use std::path::{Path, PathBuf};
 
-type DecodeFn = unsafe extern "C" fn(
-    *const u8, usize, usize, u32, u32, u32, *mut u8, usize,
-) -> i32;
+const RAW_SIGNATURE_SIZE: usize = 11;
+const TLG0_HEADER_SIZE: usize = 15;
+const MAX_PIXELS: u64 = 64_000_000;
 
 pub fn decode(data: &[u8]) -> Result<RgbaImage> {
-    let (version, width, height, colors, offset) = header(data)?;
+    let raw = raw_stream(data)?;
+    let (version, width, height, colors) = header(raw)?;
     if version != 6 { bail!("TLG5のRustデコーダはまだ利用できません"); }
-    let dll = find_dll().context("tlg6_native.dllが見つかりません")?;
-    let mut bgra = vec![0_u8; width as usize * height as usize * 4];
-    unsafe {
-        let library = Library::new(&dll).with_context(|| format!("{}を読み込めません", dll.display()))?;
-        let function: Symbol<DecodeFn> = library.get(b"tlg6_decode\0").context("tlg6_decodeが見つかりません")?;
-        let code = function(data.as_ptr(), data.len(), offset, width, height, colors, bgra.as_mut_ptr(), bgra.len());
-        if code != 0 { bail!("TLG6デコードに失敗しました（コード{code}）"); }
+    if !matches!(colors, 1 | 3 | 4) { bail!("TLG6の色数が不正です: {colors}"); }
+
+    // The imported decoder is safe Rust, but older upstream code contains
+    // indexing assertions. Convert those into a normal decode error so a
+    // corrupt archive entry cannot terminate the viewer.
+    let decoded = std::panic::catch_unwind(|| {
+        crate::tlg_codec::formats::tlg6::Tlg6::from_bytes(raw)
+            .and_then(|image| image.to_rgba_image())
+    }).map_err(|_| anyhow::anyhow!("破損したTLG6データを検出しました"))??;
+
+    if decoded.dimensions() != (width, height) {
+        bail!("TLG6出力サイズがヘッダーと一致しません");
     }
-    for pixel in bgra.chunks_exact_mut(4) { pixel.swap(0, 2); }
-    RgbaImage::from_raw(width, height, bgra).context("TLG6出力サイズが不正です")
+    Ok(decoded)
 }
 
-fn header(data: &[u8]) -> Result<(u8, u32, u32, u32, usize)> {
-    if data.len() < 38 { bail!("TLGヘッダーが短すぎます"); }
-    let mut base = 0;
-    if data.starts_with(b"TLG0.0\0sds\x1a") { base = 15; }
-    let version = if data.get(base..base + 11) == Some(b"TLG6.0\0raw\x1a") { 6 }
-        else if data.get(base..base + 11) == Some(b"TLG5.0\0raw\x1a") { 5 }
+fn raw_stream(data: &[u8]) -> Result<&[u8]> {
+    if data.starts_with(b"TLG0.0\0sds\x1a") {
+        return data.get(TLG0_HEADER_SIZE..).context("TLG0コンテナが短すぎます");
+    }
+    Ok(data)
+}
+
+fn header(raw: &[u8]) -> Result<(u8, u32, u32, u8)> {
+    if raw.len() < 23 { bail!("TLGヘッダーが短すぎます"); }
+    let version = if raw.get(..RAW_SIGNATURE_SIZE) == Some(b"TLG6.0\0raw\x1a") { 6 }
+        else if raw.get(..RAW_SIGNATURE_SIZE) == Some(b"TLG5.0\0raw\x1a") { 5 }
         else { bail!("TLG5/TLG6署名がありません"); };
-    let colors = data[base + 11] as u32;
-    let pos = if version == 6 { base + 15 } else { base + 12 };
-    let width = u32::from_le_bytes(data[pos..pos + 4].try_into()?);
-    let height = u32::from_le_bytes(data[pos + 4..pos + 8].try_into()?);
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64_000_000 { bail!("TLG画像サイズが不正です"); }
-    Ok((version, width, height, colors, pos + 8))
+    let colors = raw[11];
+    let position = if version == 6 {
+        if raw.get(12..15) != Some(&[0, 0, 0]) { bail!("未対応のTLG6フラグです"); }
+        15
+    } else { 12 };
+    let width = u32::from_le_bytes(raw.get(position..position + 4).context("TLG幅がありません")?.try_into()?);
+    let height = u32::from_le_bytes(raw.get(position + 4..position + 8).context("TLG高さがありません")?.try_into()?);
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0 || height == 0 || pixels > MAX_PIXELS { bail!("TLG画像サイズが不正です"); }
+    Ok((version, width, height, colors))
 }
 
-fn find_dll() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok().and_then(|path| path.parent().map(Path::to_path_buf));
-    let current = std::env::current_dir().ok();
-    exe_dir.into_iter().chain(current).flat_map(|base| [base.join("tlg6_native.dll"), base.join("ai_upscale/tlg6_native.dll")]).find(|path| path.is_file())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    fn header_bytes(signature: &[u8; 11], width: u32, height: u32) -> Vec<u8> {
+        let mut data = signature.to_vec();
+        data.extend_from_slice(&[4, 0, 0, 0]);
+        data.extend_from_slice(&width.to_le_bytes());
+        data.extend_from_slice(&height.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn rejects_short_and_unknown_headers() {
+        assert!(decode(b"TLG6").is_err());
+        assert!(decode(&[0; 32]).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_dimensions_before_allocating() {
+        let zero = header_bytes(b"TLG6.0\0raw\x1a", 0, 1);
+        assert!(decode(&zero).is_err());
+        let huge = header_bytes(b"TLG6.0\0raw\x1a", 100_000, 100_000);
+        assert!(decode(&huge).is_err());
+    }
+
+    #[test]
+    fn corrupt_payload_returns_error_instead_of_panicking() {
+        let data = header_bytes(b"TLG6.0\0raw\x1a", 1, 1);
+        let result = std::panic::catch_unwind(|| decode(&data));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_err());
+    }
+}

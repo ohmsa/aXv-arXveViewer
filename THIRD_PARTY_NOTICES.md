@@ -1,42 +1,40 @@
 # Third-party notices
 
-AIUpscaler固有のソースはApache-2.0で提供します。以下の依存物は各権利者のライセンスに従います。この一覧は各ライセンス本文の代わりではありません。
+aXv固有のソースはApache-2.0で提供します。Cargo依存ライブラリと外部ツールには、
+各権利者のライセンスが適用されます。
 
-| Component | Purpose | License |
+## Rust依存ライブラリ
+
+主要な直接依存は `anyhow`、`eframe/egui/wgpu`、`image`、`natord`、
+`rfd`、`zip` です。正確なバージョンは `Cargo.lock` を参照してください。
+バイナリ公開前に、その時点の全推移依存についてライセンス一覧を生成して配布物へ含めます。
+
+## 任意の外部ツール
+
+| Component | Purpose | License/condition |
 |---|---|---|
-| Python | Runtime | PSF License Agreement |
-| PySide6 / Qt for Python | GUI bindings | LGPL-3.0-only, GPL-3.0-only, or commercial |
-| Qt libraries bundled by PySide6 | GUI runtime | Component-dependent; commonly LGPL-3.0-only/GPL/commercial |
-| NumPy | Image arrays | BSD-3-Clause |
-| Pillow | Image codecs | HPND |
-| pyzipper | Encrypted ZIP support | MIT |
-| rarfile | RAR integration | ISC |
-| py7zr | 7z support | LGPL-2.1-or-later |
-| keyring | Credential storage | MIT |
-| PyInstaller | Windows packaging | GPL-2.0-or-later with a bootloader exception |
-| OpenVINO (optional) | ONNX inference | Apache-2.0 |
-| Real-ESRGAN / Real-ESRGAN ncnn Vulkan (optional download) | AI upscale | BSD-3-Clause / MIT |
-| Real-CUGAN ncnn Vulkan (optional download) | AI upscale | MIT |
-| waifu2x ncnn Vulkan (optional download) | AI upscale | MIT |
-| UnRAR (optional, user-installed) | RAR extraction | RARLAB UnRAR license |
+| Real-ESRGAN ncnn Vulkan | AI upscale | MIT |
+| Real-CUGAN ncnn Vulkan | AI upscale | MIT |
+| waifu2x ncnn Vulkan | AI upscale | MIT（ncnnはBSD-3-Clause） |
+| RealSR ncnn Vulkan | AI upscale | MIT |
+| SRMD ncnn Vulkan | AI upscale | MIT |
+| UnRAR | RAR extraction | RARLAB UnRAR license |
+| 7-Zip command line tool | 7z extraction | 7-Zipの各構成要素のライセンス |
+| Kirikiri Z TLG6 decoder | TLG6 decoding reference | Modified BSD; `LICENSES/KIRIKIRI-Z.txt` |
+| tlg_rs | Pure Rust TLG6 decoding reference | Unlicense; `LICENSES/TLG_RS-UNLICENSE.txt` |
 
-PySide6/Qtをバイナリへ同梱して再配布する場合は、対応するライセンス本文・著作権表示・再リンクに関する条件を満たしてください。PyInstallerのbootloader exceptionも配布形態に応じて確認してください。
+`setup_optional_tools.bat` はAIツールをaXvから再配布せず、利用者の確認後に公式の
+GitHub Releaseから利用者のPCへ直接取得します。UnRARは自動取得しません。
 
-AIエンジン、モデル、`unrar.exe`、`tlg6_native.dll` はこのリポジトリや配布ZIPに含めません。利用者が追加した外部物のライセンス確認と通知は、追加・再配布する人の責任です。
+Upstream information:
 
-Upstream license information:
-
-- https://doc.qt.io/qtforpython-6/licenses.html
-- https://numpy.org/doc/stable/license.html
-- https://github.com/python-pillow/Pillow/blob/main/LICENSE
-- https://github.com/danifus/pyzipper/blob/master/LICENSE
-- https://github.com/markokr/rarfile/blob/master/LICENSE
-- https://github.com/miurahr/py7zr/blob/master/LICENSE
-- https://github.com/jaraco/keyring/blob/main/LICENSE
-- https://pyinstaller.org/en/stable/license.html
-- https://github.com/openvinotoolkit/openvino/blob/master/LICENSE
-- https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE
-- https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan/blob/master/LICENSE
-- https://github.com/nihui/realcugan-ncnn-vulkan/blob/main/LICENSE
-- https://github.com/nihui/waifu2x-ncnn-vulkan/blob/master/LICENSE
+- https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan
+- https://github.com/nihui/realcugan-ncnn-vulkan
+- https://github.com/nihui/waifu2x-ncnn-vulkan
+- https://github.com/nihui/realsr-ncnn-vulkan
+- https://github.com/nihui/srmd-ncnn-vulkan
+- https://github.com/Tencent/ncnn
 - https://www.rarlab.com/license.htm
+- https://www.7-zip.org/license.txt
+- https://github.com/krkrz/krkrz/blob/master/LICENSE
+- https://github.com/Forlos/tlg_rs
